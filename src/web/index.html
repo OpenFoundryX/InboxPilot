@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>InboxPilot — Auth test</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #f5f6f8; color: #1a1a1a;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181c; color: #e8eaed; }
+      .card { background: #1f2228 !important; box-shadow: 0 1px 3px rgba(0,0,0,.5) !important; }
+      .btn { background: #2a2e35 !important; border-color: #3a3f47 !important; color: #e8eaed !important; }
+    }
+    .card {
+      width: 360px; max-width: calc(100vw - 32px); background: #fff;
+      border-radius: 16px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      text-align: center;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p.sub { margin: 0 0 24px; opacity: .6; font-size: 14px; }
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      width: 100%; padding: 11px 16px; margin: 8px 0; border: 1px solid #dadce0;
+      border-radius: 10px; background: #fff; color: #1a1a1a; font-size: 15px;
+      font-weight: 500; text-decoration: none; cursor: pointer;
+    }
+    .btn:hover { filter: brightness(0.97); }
+    .btn svg { width: 18px; height: 18px; }
+    .profile img { width: 72px; height: 72px; border-radius: 50%; margin-bottom: 12px; }
+    .profile .name { font-weight: 600; font-size: 17px; }
+    .profile .email { opacity: .6; font-size: 14px; margin-bottom: 20px; }
+    .logout { border-color: #e0b4b4; color: #b3261e; }
+    #gmail { margin: 18px 0; padding-top: 16px; border-top: 1px solid rgba(127,127,127,.2); }
+    .gmail-status { font-size: 14px; margin-bottom: 10px; opacity: .8; }
+    pre {
+      text-align: left; background: rgba(127,127,127,.12); border-radius: 8px;
+      padding: 12px; font-size: 12px; overflow-x: auto; margin-top: 20px;
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>InboxPilot</h1>
+    <p class="sub">Google OAuth test harness</p>
+
+    <!-- Logged-out view -->
+    <div id="loggedOut" class="hidden">
+      <a class="btn" href="/v1/auth/google/login">
+        <svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.3l7.9 6.1C12.2 13.3 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16z"/><path fill="#FBBC05" d="M10.4 28.6c-.5-1.4-.8-2.9-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C.9 16.3 0 20 0 24s.9 7.7 2.5 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.5l-7.1-5.5c-2 1.3-4.5 2.1-8.2 2.1-6.4 0-11.8-3.8-13.6-9.4l-7.9 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
+        Sign in with Google
+      </a>
+      <a class="btn" href="/v1/auth/google/login">
+        <svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.3l7.9 6.1C12.2 13.3 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16z"/><path fill="#FBBC05" d="M10.4 28.6c-.5-1.4-.8-2.9-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C.9 16.3 0 20 0 24s.9 7.7 2.5 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.5l-7.1-5.5c-2 1.3-4.5 2.1-8.2 2.1-6.4 0-11.8-3.8-13.6-9.4l-7.9 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
+        Sign up with Google
+      </a>
+    </div>
+
+    <!-- Logged-in view -->
+    <div id="loggedIn" class="hidden">
+      <div class="profile">
+        <img id="pic" alt="" />
+        <div class="name" id="name"></div>
+        <div class="email" id="email"></div>
+      </div>
+
+      <div id="gmail">
+        <div id="gmailStatus" class="gmail-status">Checking Gmail…</div>
+        <a class="btn hidden" id="gmailConnectBtn" href="#">Connect Gmail</a>
+        <button class="btn hidden" id="gmailSyncBtn">Sync last 7 days</button>
+        <pre id="gmailResult" class="hidden"></pre>
+      </div>
+
+      <button class="btn logout" id="logoutBtn">Log out</button>
+      <pre id="raw"></pre>
+    </div>
+  </div>
+
+  <script>
+    async function refresh() {
+      const out = document.getElementById("loggedOut");
+      const inn = document.getElementById("loggedIn");
+      try {
+        const res = await fetch("/v1/auth/me", { credentials: "include" });
+        if (!res.ok) throw new Error("not authenticated");
+        const user = await res.json();
+        document.getElementById("name").textContent = user.full_name || "(no name)";
+        document.getElementById("email").textContent = user.email;
+        const pic = document.getElementById("pic");
+        if (user.picture) { pic.src = user.picture; } else { pic.style.display = "none"; }
+        document.getElementById("raw").textContent = JSON.stringify(user, null, 2);
+        inn.classList.remove("hidden");
+        out.classList.add("hidden");
+        loadGmailStatus();
+      } catch {
+        out.classList.remove("hidden");
+        inn.classList.add("hidden");
+      }
+    }
+
+    async function loadGmailStatus() {
+      const statusEl = document.getElementById("gmailStatus");
+      const connectBtn = document.getElementById("gmailConnectBtn");
+      const syncBtn = document.getElementById("gmailSyncBtn");
+      try {
+        const res = await fetch("/v1/integrations/gmail/status", { credentials: "include" });
+        const { connected } = await res.json();
+        if (connected) {
+          statusEl.textContent = "Gmail: connected ✓";
+          syncBtn.classList.remove("hidden");
+          connectBtn.classList.add("hidden");
+        } else {
+          statusEl.textContent = "Gmail: not connected";
+          connectBtn.classList.remove("hidden");
+          syncBtn.classList.add("hidden");
+        }
+      } catch {
+        statusEl.textContent = "Gmail: status unavailable";
+      }
+    }
+
+    document.getElementById("gmailConnectBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const res = await fetch("/v1/integrations/gmail/connect", { credentials: "include" });
+      const { redirect_url } = await res.json();
+      if (redirect_url) window.location.href = redirect_url;
+    });
+
+    document.getElementById("gmailSyncBtn").addEventListener("click", async () => {
+      const result = document.getElementById("gmailResult");
+      result.classList.remove("hidden");
+      result.textContent = "Queuing sync…";
+      const res = await fetch("/v1/integrations/gmail/sync", {
+        method: "POST", credentials: "include",
+      });
+      const { task_id } = await res.json();
+      // Poll the Celery task result.
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const p = await fetch(`/v1/integrations/gmail/sync/${task_id}`, { credentials: "include" });
+        const data = await p.json();
+        result.textContent = JSON.stringify(data, null, 2);
+        if (data.status === "SUCCESS" || data.status === "FAILURE") break;
+      }
+    });
+
+    document.getElementById("logoutBtn").addEventListener("click", async () => {
+      await fetch("/v1/auth/logout", { method: "POST", credentials: "include" });
+      refresh();
+    });
+
+    refresh();
+  </script>
+</body>
+</html>

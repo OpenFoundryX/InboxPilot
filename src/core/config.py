@@ -48,6 +48,13 @@ class Settings(BaseSettings):
 
     # Integrations
     COMPOSIO_API_KEY: str = ""
+    # Gmail auth config created in the Composio dashboard (Toolkits → Gmail)
+    COMPOSIO_GMAIL_AUTH_CONFIG_ID: str = ""
+    # Where Composio sends the browser back after the Gmail OAuth grant
+    COMPOSIO_GMAIL_CALLBACK_URL: str = "http://localhost:8000/"
+    # Manual tool execution requires a pinned toolkit version ("latest" is not
+    # allowed). Bump this to a newer version from the Composio dashboard as needed.
+    COMPOSIO_GMAIL_TOOLKIT_VERSION: str = "20260702_01"
 
 
 @lru_cache
