@@ -1,0 +1,87 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-inboxos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-inboxos_password}
+      POSTGRES_DB: ${POSTGRES_DB:-inboxos}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-inboxos_user} -d ${POSTGRES_DB:-inboxos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-inboxos}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-inboxos}
+    ports:
+      - "5672:5672"    # AMQP (broker)
+      - "15672:15672"  # management UI -> http://localhost:15672
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: .
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+    command: celery -A worker.celery_app worker --loglevel=info
+
+  beat:
+    build: .
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+    command: celery -A worker.celery_app beat --loglevel=info
+
+volumes:
+  pgdata:
+  rabbitmq_data:
