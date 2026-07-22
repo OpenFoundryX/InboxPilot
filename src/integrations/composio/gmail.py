@@ -104,17 +104,11 @@ def ensure_labels(user_id: str) -> list[str]:
     return created
 
 
-def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
-    """Fetch the user's emails from the last `days` days.
-
-    Uses Gmail's `newer_than:Nd` search operator. Requires an ACTIVE connection.
-    """
+def fetch_by_query(user_id: str, query: str, max_results: int = 25) -> list[EmailSummary]:
+    """Fetch emails matching a Gmail search query."""
     resp = get_composio().tools.execute(
         FETCH_EMAILS,
-        {
-            "query": f"newer_than:{days}d",
-            "max_results": max_results,
-        },
+        {"query": query, "max_results": max_results},
         user_id=user_id,
     )
 
@@ -124,6 +118,14 @@ def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> l
 
     messages = (resp.get("data") or {}).get("messages") or []
     return [_summarize(m) for m in messages]
+
+
+def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
+    """Fetch the user's emails from the last `days` days.
+
+    Uses Gmail's `newer_than:Nd` search operator. Requires an ACTIVE connection.
+    """
+    return fetch_by_query(user_id, f"newer_than:{days}d", max_results)
 
 
 def _summarize(m: dict) -> EmailSummary:
