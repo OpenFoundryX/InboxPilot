@@ -14,10 +14,21 @@ from core.database import run_async, with_worker_session
 from core.locks import single_run
 from core.logging import get_logger
 from integrations.composio import gmail
-from models.routines import ROUTINE_BRIEFING, ROUTINE_CHASE_THREADS, Routine
+from models.routines import (
+    ROUTINE_BRIEFING,
+    ROUTINE_CATCHUP,
+    ROUTINE_CHASE_THREADS,
+    ROUTINE_DEADLINE_SCAN,
+    ROUTINE_INVOICES,
+    ROUTINE_RECONNECT,
+    Routine,
+)
 from models.users import User
 from services.digest.briefing import compose_briefing
-from services.digest.nudges import chase_open_threads
+from services.digest.catchup import compose_catchup
+from services.digest.deadlines import scan_deadlines
+from services.digest.invoices import summarize_invoices
+from services.digest.nudges import chase_open_threads, reconnect_suggestions
 from services.mailman.store import get_or_create_settings
 from services.notify import send_to_inbox
 from workers.celery_app import celery_app
@@ -63,7 +74,7 @@ async def _sweep(db) -> dict:
             continue
 
         try:
-            _run_routine(routine, str(routine.user_id), user.email, settings.timezone)
+            await _run_routine(db, routine, str(routine.user_id), user.email, settings.timezone)
         except Exception:
             log.exception("routines.run_failed", type=routine.type, user_id=str(routine.user_id))
             continue
@@ -74,13 +85,26 @@ async def _sweep(db) -> dict:
     return {"ran": ran}
 
 
-def _run_routine(routine: Routine, user_id: str, email: str, tz: str) -> None:
+async def _run_routine(db, routine: Routine, user_id: str, email: str, tz: str) -> None:
     if routine.type == ROUTINE_BRIEFING:
         subject, body = compose_briefing(user_id, tz)
         send_to_inbox(user_id, email, subject, body)
-        log.info("routines.briefing_sent", user_id=user_id)
         return
     if routine.type == ROUTINE_CHASE_THREADS:
         chase_open_threads(user_id, email, email)
+        return
+    if routine.type == ROUTINE_RECONNECT:
+        reconnect_suggestions(user_id, email, email)
+        return
+    if routine.type == ROUTINE_CATCHUP:
+        subject, body = compose_catchup(user_id)
+        send_to_inbox(user_id, email, subject, body)
+        return
+    if routine.type == ROUTINE_INVOICES:
+        subject, body = summarize_invoices(user_id)
+        send_to_inbox(user_id, email, subject, body)
+        return
+    if routine.type == ROUTINE_DEADLINE_SCAN:
+        await scan_deadlines(db, user_id, tz)
         return
     log.warning("routines.unknown_type", type=routine.type, user_id=user_id)

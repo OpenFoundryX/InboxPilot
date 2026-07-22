@@ -39,9 +39,14 @@ Each action is one of these shapes (include only the fields that apply):
 - {{"type": "create_rule", "criteria": {{"from": "x@y.com"}}, "archive": true}}
      (criteria may use from/to/subject/query; also optional: apply_label, archive, star, mark_read, trash)
 - {{"type": "manage_routine", "routine": "briefing", "enabled": true, "run_time": "08:00", "weekday": null}}
-     (routine is "briefing" (daily digest) or "chase_threads" (nudge threads awaiting a reply);
+     (routine is one of: "briefing" (daily digest), "chase_threads" (nudge threads awaiting a reply),
+      "reconnect" (people to reach out to), "deadline_scan" (turn deadlines into reminders),
+      "catchup" (important unread), "invoices" (invoice summary);
       weekday 0=Mon..6=Sun for weekly, null=daily; set enabled=false to turn off)
 - {{"type": "send_briefing_now"}}  (send a briefing/summary email immediately)
+- {{"type": "catch_up_now"}}  (summarize important unread mail — "catch me up", "what did I miss")
+- {{"type": "summarize_invoices_now"}}  (summarize recent invoices/receipts/bills)
+- {{"type": "scan_deadlines_now"}}  (find deadlines in recent mail and set reminders)
 - {{"type": "set_reminder", "remind_at": "2026-07-23T15:00:00+05:30", "title": "Call the bank", "note": "..."}}
      (remind_at is an ISO 8601 datetime WITH the user's timezone offset; resolve relative times
       like "tomorrow 3pm" / "in 2 hours" against the current time given below)

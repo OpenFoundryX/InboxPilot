@@ -20,6 +20,9 @@ from models.routines import ROUTINE_BRIEFING, Routine
 from models.users import User
 from services.commands import rules
 from services.digest.briefing import compose_briefing
+from services.digest.catchup import compose_catchup
+from services.digest.deadlines import scan_deadlines
+from services.digest.invoices import summarize_invoices
 from services.mailman import filters
 from services.mailman.store import get_or_create_settings, get_or_create_vip
 from services.notify import send_to_inbox
@@ -129,6 +132,23 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
         subject, body = compose_briefing(user_id, settings.timezone)
         send_to_inbox(user_id, user.email, subject, body)
         return "Sent your briefing"
+
+    if atype == "catch_up_now":
+        user = await db.get(User, uid)
+        subject, body = compose_catchup(user_id)
+        send_to_inbox(user_id, user.email, subject, body)
+        return "Sent your catch-up"
+
+    if atype == "summarize_invoices_now":
+        user = await db.get(User, uid)
+        subject, body = summarize_invoices(user_id)
+        send_to_inbox(user_id, user.email, subject, body)
+        return "Sent your invoice summary"
+
+    if atype == "scan_deadlines_now":
+        settings = await get_or_create_settings(db, uid)
+        n = await scan_deadlines(db, user_id, settings.timezone)
+        return f"Scanned for deadlines — set {n} reminder(s)"
 
     if atype == "set_reminder":
         raw = action.get("remind_at")

@@ -60,3 +60,48 @@ def chase_open_threads(user_id: str, email: str, self_email: str) -> int:
     send_to_inbox(user_id, email, f"🔔 {len(waiting)} threads awaiting a reply", body)
     log.info("nudges.chase_sent", user_id=user_id, count=len(waiting))
     return len(waiting)
+
+
+def _address(sender: str | None) -> str | None:
+    import re
+
+    if not sender:
+        return None
+    m = re.search(r"[\w.+-]+@[\w.-]+", sender)
+    return m.group(0).lower() if m else None
+
+
+def reconnect_suggestions(user_id: str, email: str, self_email: str) -> int:
+    """Nudge to reach out to real people you emailed a while ago but not since.
+
+    Heuristic: recipients you wrote to 30–120 days ago with no message exchanged
+    in the last 30 days.
+    """
+    old = gmail.fetch_by_query(user_id, "in:sent newer_than:120d older_than:30d", 40)
+    recent = gmail.fetch_by_query(user_id, "newer_than:30d", 60)
+    recent_people = {
+        a for m in recent for a in [_address(m.sender), _address(m.to)] if a
+    }
+
+    candidates: dict[str, str] = {}  # address -> display subject/context
+    for m in old:
+        addr = _address(m.to)
+        if not addr or addr in recent_people or addr == self_email.lower():
+            continue
+        # Skip obvious no-reply/automated addresses.
+        if any(x in addr for x in ("no-reply", "noreply", "notifications", "mailer")):
+            continue
+        candidates.setdefault(addr, m.subject or "")
+
+    if not candidates:
+        return 0
+
+    lines = [f"  • {addr}" + (f" — last about \"{ctx[:40]}\"" if ctx else "") for addr, ctx in list(candidates.items())[:10]]
+    body = (
+        "It's been a while since you've been in touch with these people — worth reconnecting?\n\n"
+        + "\n".join(lines)
+        + "\n\n— InboxOS"
+    )
+    send_to_inbox(user_id, email, f"👋 {len(candidates)} people worth reconnecting with", body)
+    log.info("nudges.reconnect_sent", user_id=user_id, count=len(candidates))
+    return len(candidates)

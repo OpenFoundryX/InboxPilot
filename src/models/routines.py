@@ -20,6 +20,9 @@ ROUTINE_BRIEFING = "briefing"  # daily "what needs your attention" digest
 ROUTINE_NEWSLETTER_DIGEST = "newsletter_digest"  # roundup of marketing/newsletters
 ROUTINE_CHASE_THREADS = "chase_threads"  # threads you're awaiting a reply on
 ROUTINE_RECONNECT = "reconnect"  # nudge to reach out before threads go cold
+ROUTINE_DEADLINE_SCAN = "deadline_scan"  # extract deadlines into reminders
+ROUTINE_CATCHUP = "catchup"  # digest of important unread
+ROUTINE_INVOICES = "invoices"  # summarize recent invoices/receipts
 
 
 class Routine(UUIDMixin, TimestampMixin, Base):
