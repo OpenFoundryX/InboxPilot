@@ -19,6 +19,26 @@ from schemas.email import EmailSummary
 
 GMAIL_TOOLKIT = "gmail"
 FETCH_EMAILS = "GMAIL_FETCH_EMAILS"
+LIST_LABELS = "GMAIL_LIST_LABELS"
+CREATE_LABEL = "GMAIL_CREATE_LABEL"
+
+# InboxPilot's organizational labels, provisioned into the user's Gmail, each
+# with a color. Gmail only accepts colors from a fixed 102-value palette, and
+# text_color + background_color must be supplied together, so we pin both.
+INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
+    "to do": {"background_color": "#fb4c2f", "text_color": "#ffffff"},  # red
+    "notification": {"background_color": "#4a86e8", "text_color": "#ffffff"},  # blue
+    "fyi": {"background_color": "#16a766", "text_color": "#ffffff"},  # green
+    "marketing": {"background_color": "#fad165", "text_color": "#000000"},  # yellow
+    "noise": {"background_color": "#999999", "text_color": "#ffffff"},  # grey
+    "to follow up": {"background_color": "#a479e2", "text_color": "#ffffff"},  # purple
+    # Operational labels for InboxPilot's own use. `labelShowIfUnread` tucks them
+    # under Gmail's "More" section, surfacing inline only when they have unread mail.
+    "inboxos-chat": {"background_color": "#2da2bb", "text_color": "#ffffff", "label_list_visibility": "labelShowIfUnread"},  # teal
+    "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
+    "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
+    "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
+}
 
 
 def get_active_connection(user_id: str) -> Any | None:
@@ -48,6 +68,40 @@ def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
         callback_url=callback_url or settings.COMPOSIO_GMAIL_CALLBACK_URL,
     )
     return request.redirect_url
+
+
+def ensure_labels(user_id: str) -> list[str]:
+    """Ensure InboxPilot's organizational labels exist in the user's Gmail.
+
+    Idempotent: lists the account's existing labels and creates only the ones
+    that are missing (case-insensitive match, since Gmail rejects duplicate
+    names). Returns the names that were newly created (empty on later runs).
+
+    Blocking Composio calls — invoke from a Celery task or a threadpool.
+    """
+    client = get_composio()
+
+    resp = client.tools.execute(LIST_LABELS, {}, user_id=user_id)
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {LIST_LABELS} failed: {resp.get('error')}")
+
+    existing = {
+        (label.get("name") or "").casefold()
+        for label in (resp.get("data") or {}).get("labels") or []
+    }
+
+    created: list[str] = []
+    for name, colors in INBOXPILOT_LABELS.items():
+        if name.casefold() in existing:
+            continue
+        res = client.tools.execute(
+            CREATE_LABEL, {"label_name": name, **colors}, user_id=user_id
+        )
+        if res.get("successful") is False:
+            raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {res.get('error')}")
+        created.append(name)
+
+    return created
 
 
 def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
