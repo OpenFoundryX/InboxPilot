@@ -4,6 +4,7 @@ from core.logging import get_logger
 from integrations.composio import gmail
 from integrations.composio.composio_client import get_composio
 from services.mailman import gmail_ops
+from services.notify import send_to_inbox
 
 log = get_logger(__name__)
 
@@ -56,6 +57,6 @@ def chase_open_threads(user_id: str, email: str, self_email: str) -> int:
         + "\n".join(lines)
         + "\n\n(I've labeled them 'to follow up'.)\n\n— InboxOS"
     )
-    gmail.send_email(user_id, email, f"🔔 {len(waiting)} threads awaiting a reply", body)
+    send_to_inbox(user_id, email, f"🔔 {len(waiting)} threads awaiting a reply", body)
     log.info("nudges.chase_sent", user_id=user_id, count=len(waiting))
     return len(waiting)

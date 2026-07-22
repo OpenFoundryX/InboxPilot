@@ -54,6 +54,18 @@ def remove_labels(user_id: str, message_ids: list[str], label_names: list[str]) 
         _modify(user_id, message_ids, add=[], remove=ids)
 
 
+def deliver_to_inbox(user_id: str, message_ids: list[str], also_label: str | None = None) -> None:
+    """Ensure messages carry INBOX (API self-sends land in Sent only).
+
+    Optionally also applies a named label (e.g. inboxos-chat so the command
+    sweep ignores our own outgoing mail).
+    """
+    add = [INBOX_LABEL]
+    if also_label and (lid := resolve_label_id(user_id, also_label)):
+        add.append(lid)
+    _modify(user_id, message_ids, add=add, remove=[])
+
+
 def hold(user_id: str, message_ids: list[str]) -> None:
     """Remove messages from the inbox and add the holding label."""
     hold_id = resolve_label_id(user_id, HOLD_LABEL_NAME)

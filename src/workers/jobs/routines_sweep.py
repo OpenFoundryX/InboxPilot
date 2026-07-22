@@ -19,6 +19,7 @@ from models.users import User
 from services.digest.briefing import compose_briefing
 from services.digest.nudges import chase_open_threads
 from services.mailman.store import get_or_create_settings
+from services.notify import send_to_inbox
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
@@ -76,7 +77,7 @@ async def _sweep(db) -> dict:
 def _run_routine(routine: Routine, user_id: str, email: str, tz: str) -> None:
     if routine.type == ROUTINE_BRIEFING:
         subject, body = compose_briefing(user_id, tz)
-        gmail.send_email(user_id, email, subject, body)
+        send_to_inbox(user_id, email, subject, body)
         log.info("routines.briefing_sent", user_id=user_id)
         return
     if routine.type == ROUTINE_CHASE_THREADS:

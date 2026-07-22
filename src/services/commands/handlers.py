@@ -22,6 +22,7 @@ from services.commands import rules
 from services.digest.briefing import compose_briefing
 from services.mailman import filters
 from services.mailman.store import get_or_create_settings, get_or_create_vip
+from services.notify import send_to_inbox
 
 log = get_logger(__name__)
 
@@ -126,7 +127,7 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
         settings = await get_or_create_settings(db, uid)
         user = await db.get(User, uid)
         subject, body = compose_briefing(user_id, settings.timezone)
-        gmail.send_email(user_id, user.email, subject, body)
+        send_to_inbox(user_id, user.email, subject, body)
         return "Sent your briefing"
 
     if atype == "set_reminder":

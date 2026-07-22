@@ -14,6 +14,7 @@ from core.logging import get_logger
 from integrations.composio import gmail
 from models.reminders import Reminder
 from models.users import User
+from services.notify import send_to_inbox
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
@@ -61,5 +62,5 @@ def _deliver(user_id: str, email: str, r: Reminder) -> None:
     if r.thread_id:
         gmail.reply_in_thread(user_id, r.thread_id, email, body)
     else:
-        gmail.send_email(user_id, email, f"⏰ Reminder: {r.title}"[:120], body)
+        send_to_inbox(user_id, email, f"⏰ Reminder: {r.title}"[:120], body)
     log.info("reminders.delivered", user_id=user_id, title=r.title)
