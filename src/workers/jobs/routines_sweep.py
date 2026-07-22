@@ -22,6 +22,7 @@ from models.routines import (
     ROUTINE_DOUBLE_BOOKINGS,
     ROUTINE_INVOICES,
     ROUTINE_RECONNECT,
+    ROUTINE_SCHEDULE_TRUSTED,
     Routine,
 )
 from models.users import User
@@ -31,6 +32,7 @@ from services.digest.catchup import compose_catchup
 from services.digest.deadlines import scan_deadlines
 from services.digest.invoices import summarize_invoices
 from services.digest.nudges import chase_open_threads, reconnect_suggestions
+from services.digest.scheduling import draft_meeting_replies
 from services.mailman.store import get_or_create_settings
 from services.notify import send_to_inbox
 from workers.celery_app import celery_app
@@ -111,5 +113,8 @@ async def _run_routine(db, routine: Routine, user_id: str, email: str, tz: str) 
         return
     if routine.type == ROUTINE_DOUBLE_BOOKINGS:
         double_bookings_digest(user_id, email, tz)
+        return
+    if routine.type == ROUTINE_SCHEDULE_TRUSTED:
+        await draft_meeting_replies(db, user_id, tz)
         return
     log.warning("routines.unknown_type", type=routine.type, user_id=user_id)

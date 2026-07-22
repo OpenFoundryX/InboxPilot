@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     COMPOSIO_GMAIL_TOOLKIT_VERSION: str = "20260702_01"
     # Google Calendar auth config (custom OAuth client) for calendar features.
     COMPOSIO_GCAL_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_GCAL_TOOLKIT_VERSION: str = "20260721_00"
     # Secret used to verify inbound Composio trigger webhooks (Composio dashboard
     # → Settings → Webhooks). Leave empty to skip verification (dev only).
     COMPOSIO_WEBHOOK_SECRET: str = ""

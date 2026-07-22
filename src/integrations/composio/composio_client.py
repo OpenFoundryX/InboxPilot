@@ -18,8 +18,9 @@ def get_composio() -> Composio:
     kwargs: dict = {
         "api_key": settings.COMPOSIO_API_KEY,
         "toolkit_versions": {
-            "gmail": settings.COMPOSIO_GMAIL_TOOLKIT_VERSION
-        }
+            "gmail": settings.COMPOSIO_GMAIL_TOOLKIT_VERSION,
+            "googlecalendar": settings.COMPOSIO_GCAL_TOOLKIT_VERSION,
+        },
     }
 
     return Composio(**kwargs)

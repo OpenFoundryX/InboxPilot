@@ -24,6 +24,7 @@ ROUTINE_DEADLINE_SCAN = "deadline_scan"  # extract deadlines into reminders
 ROUTINE_CATCHUP = "catchup"  # digest of important unread
 ROUTINE_INVOICES = "invoices"  # summarize recent invoices/receipts
 ROUTINE_DOUBLE_BOOKINGS = "double_bookings"  # heads-up when meetings collide
+ROUTINE_SCHEDULE_TRUSTED = "schedule_trusted"  # draft slot proposals for VIP meeting requests
 
 
 class Routine(UUIDMixin, TimestampMixin, Base):

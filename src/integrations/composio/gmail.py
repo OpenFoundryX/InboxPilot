@@ -24,6 +24,7 @@ CREATE_LABEL = "GMAIL_CREATE_LABEL"
 DELETE_LABEL = "GMAIL_DELETE_LABEL"
 SEND_EMAIL = "GMAIL_SEND_EMAIL"
 REPLY_TO_THREAD = "GMAIL_REPLY_TO_THREAD"
+CREATE_DRAFT = "GMAIL_CREATE_EMAIL_DRAFT"
 
 # InboxPilot's organizational labels, provisioned into the user's Gmail, each
 # with a color. Gmail only accepts colors from a fixed 102-value palette, and
@@ -105,6 +106,20 @@ def send_email(
     resp = get_composio().tools.execute(SEND_EMAIL, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {SEND_EMAIL} failed: {resp.get('error')}")
+    data = resp.get("data") or {}
+    return data.get("id") or (data.get("response_data") or {}).get("id")
+
+
+def create_draft(
+    user_id: str, to: str, subject: str, body: str, thread_id: str | None = None
+) -> str | None:
+    """Create a draft reply (threaded when thread_id is given). Never sends."""
+    payload: dict = {"recipient_email": to, "subject": subject, "body": body, "is_html": False}
+    if thread_id:
+        payload["thread_id"] = thread_id
+    resp = get_composio().tools.execute(CREATE_DRAFT, payload, user_id=user_id)
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {CREATE_DRAFT} failed: {resp.get('error')}")
     data = resp.get("data") or {}
     return data.get("id") or (data.get("response_data") or {}).get("id")
 
