@@ -41,7 +41,8 @@ Each action is one of these shapes (include only the fields that apply):
 - {{"type": "manage_routine", "routine": "briefing", "enabled": true, "run_time": "08:00", "weekday": null}}
      (routine is one of: "briefing" (daily digest), "chase_threads" (nudge threads awaiting a reply),
       "reconnect" (people to reach out to), "deadline_scan" (turn deadlines into reminders),
-      "catchup" (important unread), "invoices" (invoice summary);
+      "catchup" (important unread), "invoices" (invoice summary),
+      "double_bookings" (calendar clash heads-up), "schedule_trusted" (draft meeting times for VIP requests);
       weekday 0=Mon..6=Sun for weekly, null=daily; set enabled=false to turn off)
 - {{"type": "send_briefing_now"}}  (send a briefing/summary email immediately)
 - {{"type": "catch_up_now"}}  (summarize important unread mail — "catch me up", "what did I miss")
