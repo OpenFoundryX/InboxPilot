@@ -23,6 +23,7 @@ ROUTINE_RECONNECT = "reconnect"  # nudge to reach out before threads go cold
 ROUTINE_DEADLINE_SCAN = "deadline_scan"  # extract deadlines into reminders
 ROUTINE_CATCHUP = "catchup"  # digest of important unread
 ROUTINE_INVOICES = "invoices"  # summarize recent invoices/receipts
+ROUTINE_DOUBLE_BOOKINGS = "double_bookings"  # heads-up when meetings collide
 
 
 class Routine(UUIDMixin, TimestampMixin, Base):

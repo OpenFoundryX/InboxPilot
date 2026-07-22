@@ -19,12 +19,14 @@ from models.routines import (
     ROUTINE_CATCHUP,
     ROUTINE_CHASE_THREADS,
     ROUTINE_DEADLINE_SCAN,
+    ROUTINE_DOUBLE_BOOKINGS,
     ROUTINE_INVOICES,
     ROUTINE_RECONNECT,
     Routine,
 )
 from models.users import User
 from services.digest.briefing import compose_briefing
+from services.digest.calendar_checks import double_bookings_digest
 from services.digest.catchup import compose_catchup
 from services.digest.deadlines import scan_deadlines
 from services.digest.invoices import summarize_invoices
@@ -106,5 +108,8 @@ async def _run_routine(db, routine: Routine, user_id: str, email: str, tz: str) 
         return
     if routine.type == ROUTINE_DEADLINE_SCAN:
         await scan_deadlines(db, user_id, tz)
+        return
+    if routine.type == ROUTINE_DOUBLE_BOOKINGS:
+        double_bookings_digest(user_id, email, tz)
         return
     log.warning("routines.unknown_type", type=routine.type, user_id=user_id)
