@@ -12,6 +12,7 @@ from models.base import Base
 # Import model modules so their tables register on Base.metadata.
 # Add new model modules here as they are created.
 from models import auth as auth_models  # noqa: F401
+from models import mailman as mailman_models  # noqa: F401
 from models import users as users_models  # noqa: F401
 
 config = context.config

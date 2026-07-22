@@ -48,6 +48,23 @@ class Settings(BaseSettings):
 
     # Integrations
     COMPOSIO_API_KEY: str = ""
+    # Gmail auth config created in the Composio dashboard (Toolkits → Gmail)
+    COMPOSIO_GMAIL_AUTH_CONFIG_ID: str = ""
+    # Where Composio sends the browser back after the Gmail OAuth grant
+    COMPOSIO_GMAIL_CALLBACK_URL: str = "http://localhost:8000/"
+    # Manual tool execution requires a pinned toolkit version ("latest" is not
+    # allowed). Bump this to a newer version from the Composio dashboard as needed.
+    COMPOSIO_GMAIL_TOOLKIT_VERSION: str = "20260702_01"
+    # Secret used to verify inbound Composio trigger webhooks (Composio dashboard
+    # → Settings → Webhooks). Leave empty to skip verification (dev only).
+    COMPOSIO_WEBHOOK_SECRET: str = ""
+
+    # Mailman (batched delivery)
+    # Public base URL Composio posts trigger webhooks to (e.g. an ngrok URL in
+    # dev). The webhook path is `${PUBLIC_BASE_URL}/v1/webhooks/composio`.
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
+    # Default timezone for a user's delivery schedule until they set their own.
+    MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
 
 
 @lru_cache

@@ -1,4 +1,6 @@
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, Coroutine
+from typing import Any, TypeVar
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -7,6 +9,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from core.config import settings
+
+T = TypeVar("T")
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -31,3 +35,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+def run_async(coro: Coroutine[Any, Any, T]) -> T:
+    """Run an async coroutine to completion from sync code (e.g. a Celery task).
+
+    Celery tasks are synchronous, but our DB layer is async. This spins up a
+    fresh event loop per call — fine for the low-frequency Mailman jobs.
+    """
+    return asyncio.run(coro)

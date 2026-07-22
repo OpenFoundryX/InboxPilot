@@ -8,10 +8,18 @@ Celery app. Add new task modules to `TASK_MODULES` as domains grow.
 
 from workers.celery_app import celery_app
 
+# Import every model module so all tables register on Base.metadata — needed so
+# SQLAlchemy can resolve cross-model foreign keys (e.g. mailman -> users) inside
+# worker tasks.
+from models import auth as _auth_models  # noqa: F401,E402
+from models import mailman as _mailman_models  # noqa: F401,E402
+from models import users as _users_models  # noqa: F401,E402
+
 TASK_MODULES = [
     "workers.jobs.classify_new_email",
     "workers.jobs.reply_draft_job",
     "workers.jobs.sync_last_7_days",
+    "workers.jobs.mailman_tick",
     "agents.tasks",
 ]
 

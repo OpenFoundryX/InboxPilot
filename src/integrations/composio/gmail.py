@@ -1,0 +1,149 @@
+"""Gmail integration via Composio.
+
+Composio manages its own OAuth grant to the user's Gmail (separate from this
+app's Google login). A user must have an ACTIVE Composio Gmail connection
+before emails can be fetched.
+
+Every function takes `user_id` — the Composio entity id. We use the app user's
+UUID (as a string) for this, so one app user maps to one Composio entity.
+
+Note: these call the Composio SDK, which is synchronous and does blocking HTTP.
+Call them from Celery tasks directly, or from async code via a threadpool.
+"""
+
+from typing import Any
+
+from core.config import settings
+from integrations.composio.composio_client import get_composio
+from schemas.email import EmailSummary
+
+GMAIL_TOOLKIT = "gmail"
+FETCH_EMAILS = "GMAIL_FETCH_EMAILS"
+LIST_LABELS = "GMAIL_LIST_LABELS"
+CREATE_LABEL = "GMAIL_CREATE_LABEL"
+
+# InboxPilot's organizational labels, provisioned into the user's Gmail, each
+# with a color. Gmail only accepts colors from a fixed 102-value palette, and
+# text_color + background_color must be supplied together, so we pin both.
+INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
+    "to do": {"background_color": "#fb4c2f", "text_color": "#ffffff"},  # red
+    "notification": {"background_color": "#4a86e8", "text_color": "#ffffff"},  # blue
+    "fyi": {"background_color": "#16a766", "text_color": "#ffffff"},  # green
+    "marketing": {"background_color": "#fad165", "text_color": "#000000"},  # yellow
+    "noise": {"background_color": "#999999", "text_color": "#ffffff"},  # grey
+    "to follow up": {"background_color": "#a479e2", "text_color": "#ffffff"},  # purple
+    # Operational labels for InboxPilot's own use. `labelShowIfUnread` tucks them
+    # under Gmail's "More" section, surfacing inline only when they have unread mail.
+    "inboxos-chat": {"background_color": "#2da2bb", "text_color": "#ffffff", "label_list_visibility": "labelShowIfUnread"},  # teal
+    "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
+    "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
+    "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
+}
+
+
+def get_active_connection(user_id: str) -> Any | None:
+    """Return the user's ACTIVE Gmail connection, or None if not connected."""
+    res = get_composio().connected_accounts.list(
+        user_ids=[user_id],
+        toolkit_slugs=[GMAIL_TOOLKIT],
+        statuses=["ACTIVE"],
+    )
+    items = getattr(res, "items", None) or []
+    return items[0] if items else None
+
+
+def is_connected(user_id: str) -> bool:
+    return get_active_connection(user_id) is not None
+
+
+def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
+    """Start the Gmail OAuth grant. Returns a redirect URL to send the user to."""
+    if not settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID:
+        raise RuntimeError("COMPOSIO_GMAIL_AUTH_CONFIG_ID is not configured")
+    # .link() is the current endpoint for Composio-managed OAuth auth configs;
+    # .initiate() was retired for those (POST /api/v3/connected_accounts/link).
+    request = get_composio().connected_accounts.link(
+        user_id=user_id,
+        auth_config_id=settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID,
+        callback_url=callback_url or settings.COMPOSIO_GMAIL_CALLBACK_URL,
+    )
+    return request.redirect_url
+
+
+def ensure_labels(user_id: str) -> list[str]:
+    """Ensure InboxPilot's organizational labels exist in the user's Gmail.
+
+    Idempotent: lists the account's existing labels and creates only the ones
+    that are missing (case-insensitive match, since Gmail rejects duplicate
+    names). Returns the names that were newly created (empty on later runs).
+
+    Blocking Composio calls — invoke from a Celery task or a threadpool.
+    """
+    client = get_composio()
+
+    resp = client.tools.execute(LIST_LABELS, {}, user_id=user_id)
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {LIST_LABELS} failed: {resp.get('error')}")
+
+    existing = {
+        (label.get("name") or "").casefold()
+        for label in (resp.get("data") or {}).get("labels") or []
+    }
+
+    created: list[str] = []
+    for name, colors in INBOXPILOT_LABELS.items():
+        if name.casefold() in existing:
+            continue
+        res = client.tools.execute(
+            CREATE_LABEL, {"label_name": name, **colors}, user_id=user_id
+        )
+        if res.get("successful") is False:
+            raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {res.get('error')}")
+        created.append(name)
+
+    return created
+
+
+def fetch_by_query(user_id: str, query: str, max_results: int = 25) -> list[EmailSummary]:
+    """Fetch emails matching a Gmail search query."""
+    resp = get_composio().tools.execute(
+        FETCH_EMAILS,
+        {"query": query, "max_results": max_results},
+        user_id=user_id,
+    )
+
+    # The SDK returns a plain dict: {"data": {...}, "error": ..., "successful": bool}.
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
+
+    messages = (resp.get("data") or {}).get("messages") or []
+    return [_summarize(m) for m in messages]
+
+
+def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
+    """Fetch the user's emails from the last `days` days.
+
+    Uses Gmail's `newer_than:Nd` search operator. Requires an ACTIVE connection.
+    """
+    return fetch_by_query(user_id, f"newer_than:{days}d", max_results)
+
+
+def _summarize(m: dict) -> EmailSummary:
+    """Map a Gmail message (Composio shape) to an EmailSummary."""
+    preview = m.get("preview")
+    snippet = preview.get("body") if isinstance(preview, dict) else preview
+    if not snippet:
+        snippet = m.get("messageText")
+    if isinstance(snippet, str):
+        snippet = snippet.strip()[:200]
+    return EmailSummary(
+        id=m.get("messageId"),
+        thread_id=m.get("threadId"),
+        sender=m.get("sender"),
+        to=m.get("to"),
+        subject=m.get("subject"),
+        snippet=snippet,
+        body=m.get("messageText"),
+        date=m.get("messageTimestamp"),
+        labels=m.get("labelIds") or [],
+    )
