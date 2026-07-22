@@ -27,6 +27,11 @@ beat_schedule: dict = {
         "task": "routines.sweep",
         "schedule": 60.0,
     },
+    # Deliver due reminders.
+    "reminders-sweep": {
+        "task": "reminders.sweep",
+        "schedule": 60.0,
+    },
 }
 
 __all__ = ["beat_schedule", "crontab"]

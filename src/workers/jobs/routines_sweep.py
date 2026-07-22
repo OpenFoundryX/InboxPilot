@@ -14,9 +14,10 @@ from core.database import run_async, with_worker_session
 from core.locks import single_run
 from core.logging import get_logger
 from integrations.composio import gmail
-from models.routines import ROUTINE_BRIEFING, Routine
+from models.routines import ROUTINE_BRIEFING, ROUTINE_CHASE_THREADS, Routine
 from models.users import User
 from services.digest.briefing import compose_briefing
+from services.digest.nudges import chase_open_threads
 from services.mailman.store import get_or_create_settings
 from workers.celery_app import celery_app
 
@@ -77,5 +78,8 @@ def _run_routine(routine: Routine, user_id: str, email: str, tz: str) -> None:
         subject, body = compose_briefing(user_id, tz)
         gmail.send_email(user_id, email, subject, body)
         log.info("routines.briefing_sent", user_id=user_id)
+        return
+    if routine.type == ROUTINE_CHASE_THREADS:
+        chase_open_threads(user_id, email, email)
         return
     log.warning("routines.unknown_type", type=routine.type, user_id=user_id)

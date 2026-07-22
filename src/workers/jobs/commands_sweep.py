@@ -17,9 +17,11 @@ from integrations.composio import gmail
 from integrations.composio.composio_client import get_composio
 from models.users import User
 from services.commands import handlers
+from services.commands.ask import answer_question
 from services.commands.chat import compose_reply
 from services.commands.parser import parse_command
 from services.mailman import gmail_ops
+from services.mailman.store import get_or_create_settings
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
@@ -86,7 +88,8 @@ async def _sweep_user(db, uid: uuid.UUID, email: str) -> int:
         if not e.id:
             continue
         try:
-            plan = parse_command(e.subject, e.body)
+            settings_row = await get_or_create_settings(db, uid)
+            plan = parse_command(e.subject, e.body, tz=settings_row.timezone)
         except Exception:
             log.exception("commands.parse_failed", user_id=user_id, message_id=e.id)
             break  # likely config/quota; stop this sweep
@@ -102,7 +105,9 @@ async def _sweep_user(db, uid: uuid.UUID, email: str) -> int:
         await db.commit()
 
         # Always reply, in-thread and conversationally (like a chat assistant).
-        _reply_in_thread(user_id, e, email, results)
+        # Commands → confirm what was done; questions/notes → answer grounded
+        # in the user's inbox ("Ask anything").
+        _reply_in_thread(user_id, e, email, results, had_actions=bool(plan["actions"]))
 
         # File the command so it's never reprocessed.
         try:
@@ -120,10 +125,19 @@ async def _sweep_user(db, uid: uuid.UUID, email: str) -> int:
     return count
 
 
-def _reply_in_thread(user_id: str, command, email: str, results: list[str]) -> None:
-    """Compose a conversational reply and send it threaded under the command."""
+def _reply_in_thread(
+    user_id: str, command, email: str, results: list[str], had_actions: bool
+) -> None:
+    """Compose a reply and send it threaded under the command.
+
+    Commands get a confirmation of what was done; questions/notes get an
+    inbox-grounded answer ("Ask anything").
+    """
     try:
-        text = compose_reply(command.subject, command.body, results or None)
+        if had_actions:
+            text = compose_reply(command.subject, command.body, results)
+        else:
+            text = answer_question(user_id, command.subject, command.body)
     except Exception:
         log.exception("commands.compose_failed", user_id=user_id)
         return

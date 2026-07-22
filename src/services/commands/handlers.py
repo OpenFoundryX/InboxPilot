@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
 from integrations.composio import gmail
+from datetime import datetime, timezone
+
 from models.mailman import MODE_CUSTOM_DAILY, MODE_INTERVAL, MODE_TIMES
+from models.reminders import ORIGIN_MANUAL, Reminder
 from models.routines import ROUTINE_BRIEFING, Routine
 from models.users import User
 from services.commands import rules
@@ -125,5 +128,27 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
         subject, body = compose_briefing(user_id, settings.timezone)
         gmail.send_email(user_id, user.email, subject, body)
         return "Sent your briefing"
+
+    if atype == "set_reminder":
+        raw = action.get("remind_at")
+        if not raw:
+            raise ValueError("set_reminder needs a remind_at time")
+        try:
+            remind_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"could not parse remind_at {raw!r}") from exc
+        if remind_at.tzinfo is None:
+            remind_at = remind_at.replace(tzinfo=timezone.utc)
+        title = (action.get("title") or "Reminder").strip()
+        db.add(
+            Reminder(
+                user_id=uid,
+                remind_at=remind_at,
+                title=title,
+                note=action.get("note"),
+                origin=ORIGIN_MANUAL,
+            )
+        )
+        return f"Reminder set: '{title}' at {remind_at.isoformat()}"
 
     raise ValueError(f"unknown action type: {atype!r}")

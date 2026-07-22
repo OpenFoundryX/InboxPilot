@@ -6,6 +6,8 @@ extracts zero or more structured actions; an empty list means "not a command"
 """
 
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 
@@ -37,8 +39,12 @@ Each action is one of these shapes (include only the fields that apply):
 - {{"type": "create_rule", "criteria": {{"from": "x@y.com"}}, "archive": true}}
      (criteria may use from/to/subject/query; also optional: apply_label, archive, star, mark_read, trash)
 - {{"type": "manage_routine", "routine": "briefing", "enabled": true, "run_time": "08:00", "weekday": null}}
-     (routine is "briefing"; weekday 0=Mon..6=Sun for weekly, null=daily; set enabled=false to turn off)
+     (routine is "briefing" (daily digest) or "chase_threads" (nudge threads awaiting a reply);
+      weekday 0=Mon..6=Sun for weekly, null=daily; set enabled=false to turn off)
 - {{"type": "send_briefing_now"}}  (send a briefing/summary email immediately)
+- {{"type": "set_reminder", "remind_at": "2026-07-23T15:00:00+05:30", "title": "Call the bank", "note": "..."}}
+     (remind_at is an ISO 8601 datetime WITH the user's timezone offset; resolve relative times
+      like "tomorrow 3pm" / "in 2 hours" against the current time given below)
 
 Rules:
 - Include ONLY the fields that apply. OMIT every unused field entirely.
@@ -58,7 +64,7 @@ def _client() -> OpenAI:
     return OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
-def parse_command(subject: str | None, body: str | None) -> dict:
+def parse_command(subject: str | None, body: str | None, tz: str | None = None) -> dict:
     """Return {"actions": [...], "summary": str}. Empty actions = not a command."""
     if not settings.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
@@ -66,7 +72,13 @@ def parse_command(subject: str | None, body: str | None) -> dict:
     if subject and subject.strip().startswith(REPLY_SUBJECT_PREFIX):
         return {"actions": [], "summary": ""}
 
-    content = f"Subject: {subject or '(no subject)'}\n\n{(body or '')[:4000]}"
+    try:
+        now = datetime.now(ZoneInfo(tz or settings.MAILMAN_DEFAULT_TZ))
+    except Exception:
+        now = datetime.now()
+    now_line = f"Current time: {now.isoformat()} ({tz or settings.MAILMAN_DEFAULT_TZ})."
+
+    content = f"{now_line}\nSubject: {subject or '(no subject)'}\n\n{(body or '')[:4000]}"
     resp = _client().chat.completions.create(
         model=settings.OPENAI_MODEL,
         temperature=0,

@@ -23,6 +23,7 @@ TASK_MODULES = [
     "workers.jobs.classify_sweep",
     "workers.jobs.commands_sweep",
     "workers.jobs.routines_sweep",
+    "workers.jobs.reminders_sweep",
     "agents.tasks",
 ]
 
