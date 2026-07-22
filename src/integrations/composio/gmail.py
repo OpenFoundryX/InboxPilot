@@ -85,13 +85,24 @@ def _find_label_id(user_id: str, name: str) -> str | None:
     return None
 
 
-def send_email(user_id: str, to: str, subject: str, body: str) -> str | None:
-    """Send a plain-text email; return the sent message id if available."""
-    resp = get_composio().tools.execute(
-        SEND_EMAIL,
-        {"recipient_email": to, "subject": subject, "body": body, "is_html": False},
-        user_id=user_id,
-    )
+def send_email(
+    user_id: str, to: str, subject: str, body: str, from_email: str | None = None
+) -> str | None:
+    """Send a plain-text email; return the sent message id if available.
+
+    When `from_email` is a +alias of the account (e.g. you+inboxos@gmail.com),
+    the message is delivered to the inbox as genuinely *received* mail with that
+    sender identity — no need to force the INBOX label afterwards.
+    """
+    payload: dict = {
+        "recipient_email": to,
+        "subject": subject,
+        "body": body,
+        "is_html": False,
+    }
+    if from_email:
+        payload["from_email"] = from_email
+    resp = get_composio().tools.execute(SEND_EMAIL, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {SEND_EMAIL} failed: {resp.get('error')}")
     data = resp.get("data") or {}
