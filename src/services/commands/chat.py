@@ -38,8 +38,8 @@ def compose_reply(subject: str | None, body: str | None, results: list[str] | No
     parts = [f"The user emailed you.\nSubject: {subject or '(no subject)'}\n\n{(body or '')[:3000]}"]
     if results:
         parts.append("\n\nActions you just performed:\n" + "\n".join(f"- {r}" for r in results))
-    content = "".join(parts)
 
+    content = "".join(parts)
     resp = OpenAI(api_key=settings.OPENAI_API_KEY).chat.completions.create(
         model=settings.OPENAI_MODEL,
         temperature=0.3,

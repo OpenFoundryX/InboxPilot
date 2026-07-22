@@ -26,18 +26,16 @@ SEND_EMAIL = "GMAIL_SEND_EMAIL"
 REPLY_TO_THREAD = "GMAIL_REPLY_TO_THREAD"
 CREATE_DRAFT = "GMAIL_CREATE_EMAIL_DRAFT"
 
-# InboxPilot's organizational labels, provisioned into the user's Gmail, each
-# with a color. Gmail only accepts colors from a fixed 102-value palette, and
-# text_color + background_color must be supplied together, so we pin both.
+
 INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
+
     "to do": {"background_color": "#fb4c2f", "text_color": "#ffffff"},  # red
     "notification": {"background_color": "#4a86e8", "text_color": "#ffffff"},  # blue
     "fyi": {"background_color": "#16a766", "text_color": "#ffffff"},  # green
     "marketing": {"background_color": "#fad165", "text_color": "#000000"},  # yellow
     "noise": {"background_color": "#999999", "text_color": "#ffffff"},  # grey
     "to follow up": {"background_color": "#a479e2", "text_color": "#ffffff"},  # purple
-    # Operational labels for InboxPilot's own use. `labelShowIfUnread` tucks them
-    # under Gmail's "More" section, surfacing inline only when they have unread mail.
+
     "inboxos-chat": {"background_color": "#2da2bb", "text_color": "#ffffff", "label_list_visibility": "labelShowIfUnread"},  # teal
     "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
     "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
@@ -51,26 +49,41 @@ def create_label(user_id: str, name: str) -> str:
     Idempotent-ish: if a label with this name already exists, returns that id
     instead of failing on Gmail's duplicate-name 409.
     """
+
     existing = _find_label_id(user_id, name)
     if existing:
         return existing
+
     resp = get_composio().tools.execute(
-        CREATE_LABEL, {"label_name": name}, user_id=user_id
+        CREATE_LABEL, 
+        {
+            "label_name": name
+        }, 
+        user_id=user_id
     )
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {resp.get('error')}")
-    data = resp.get("data") or {}
-    return data.get("id") or (data.get("response_data") or {}).get("id")
+
+    data = resp.get("data")
+    return data.get("id") or data.get("response_data").get("id")
 
 
 def delete_label(user_id: str, name: str) -> bool:
     """Delete a Gmail label by name. Returns True if it existed and was removed."""
+
     label_id = _find_label_id(user_id, name)
     if not label_id:
         return False
+    
     resp = get_composio().tools.execute(
-        DELETE_LABEL, {"label_id": label_id}, user_id=user_id
+        DELETE_LABEL, 
+        {
+            "label_id": label_id
+        }, 
+        user_id=user_id
     )
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {DELETE_LABEL} failed for {name!r}: {resp.get('error')}")
     return True
@@ -81,13 +94,17 @@ def _find_label_id(user_id: str, name: str) -> str | None:
     if resp.get("successful") is False:
         return None
     for label in (resp.get("data") or {}).get("labels") or []:
-        if (label.get("name") or "").casefold() == name.casefold():
+        if label.get("name").casefold() == name.casefold():
             return label.get("id")
     return None
 
 
 def send_email(
-    user_id: str, to: str, subject: str, body: str, from_email: str | None = None
+    user_id: str, 
+    to: str, 
+    subject: str, 
+    body: str, 
+    from_email: str | None = None
 ) -> str | None:
     """Send a plain-text email; return the sent message id if available.
 
@@ -95,19 +112,21 @@ def send_email(
     the message is delivered to the inbox as genuinely *received* mail with that
     sender identity — no need to force the INBOX label afterwards.
     """
+
     payload: dict = {
         "recipient_email": to,
         "subject": subject,
         "body": body,
         "is_html": False,
     }
+
     if from_email:
         payload["from_email"] = from_email
     resp = get_composio().tools.execute(SEND_EMAIL, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {SEND_EMAIL} failed: {resp.get('error')}")
-    data = resp.get("data") or {}
-    return data.get("id") or (data.get("response_data") or {}).get("id")
+    data = resp.get("data")
+    return data.get("id") or data.get("response_data").get("id")
 
 
 def create_draft(
@@ -120,8 +139,8 @@ def create_draft(
     resp = get_composio().tools.execute(CREATE_DRAFT, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {CREATE_DRAFT} failed: {resp.get('error')}")
-    data = resp.get("data") or {}
-    return data.get("id") or (data.get("response_data") or {}).get("id")
+    data = resp.get("data")
+    return data.get("id") or data.get("response_data").get("id")
 
 
 def reply_in_thread(user_id: str, thread_id: str, to: str, body: str) -> str | None:
@@ -138,8 +157,8 @@ def reply_in_thread(user_id: str, thread_id: str, to: str, body: str) -> str | N
     )
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {REPLY_TO_THREAD} failed: {resp.get('error')}")
-    data = resp.get("data") or {}
-    return data.get("id") or (data.get("response_data") or {}).get("id")
+    data = resp.get("data")
+    return data.get("id") or data.get("response_data").get("id")
 
 
 def get_active_connection(user_id: str) -> Any | None:
@@ -161,8 +180,7 @@ def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
     """Start the Gmail OAuth grant. Returns a redirect URL to send the user to."""
     if not settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID:
         raise RuntimeError("COMPOSIO_GMAIL_AUTH_CONFIG_ID is not configured")
-    # .link() is the current endpoint for Composio-managed OAuth auth configs;
-    # .initiate() was retired for those (POST /api/v3/connected_accounts/link).
+
     request = get_composio().connected_accounts.link(
         user_id=user_id,
         auth_config_id=settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID,

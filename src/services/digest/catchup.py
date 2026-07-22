@@ -14,15 +14,14 @@ def compose_catchup(user_id: str, days: int = 30) -> tuple[str, str]:
     total = 0
     for label in PRIORITY:
         msgs = gmail.fetch_by_query(
-            user_id, f'is:unread label:"{label}" -from:me newer_than:{days}d', 15
+            user_id, 
+            f'is:unread label:"{label}" -from:me newer_than:{days}d',
+            15
         )
         if not msgs:
             continue
         total += len(msgs)
-        lines = [
-            f"  • {(m.subject or '(no subject)')[:70]} — {(m.sender or '').split('<')[0].strip()[:30]}"
-            for m in msgs
-        ]
+        lines = [f"  • {(m.subject or '(no subject)')[:70]} — {(m.sender or '').split('<')[0].strip()[:30]}"for m in msgs]
         sections.append(f"{label.title()} ({len(msgs)})\n" + "\n".join(lines))
 
     if total == 0:

@@ -19,59 +19,39 @@ class Settings(BaseSettings):
     # API
     API_V1_PREFIX: str = "/v1"
 
-    # JWT access tokens + refresh sessions
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_TTL_MIN: int = 30
     REFRESH_TOKEN_TTL_DAYS: int = 30
 
-    # Google OAuth (PKCE)
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/v1/auth/google/callback"
-    # Where to send the browser after a successful login (your frontend)
     POST_LOGIN_REDIRECT_URL: str = "http://localhost:3000"
 
-    # Database (async SQLAlchemy URL, e.g. postgresql+asyncpg://...)
     DATABASE_URL: str = "postgresql+asyncpg://inboxos_user:inboxos_password@db:5432/inboxos"
 
-    # Celery broker (RabbitMQ / AMQP)
     CELERY_BROKER_URL: str = "amqp://inboxos:inboxos@rabbitmq:5672//"
 
-    # Redis: Celery result backend + app cache
     REDIS_URL: str = "redis://redis:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
-    # LLM providers
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    # Model used to auto-classify incoming email into org labels.
     OPENAI_MODEL: str = "gpt-4o-mini"
-    # Mail-command sweep (control the app by emailing yourself).
+
     COMMANDS_LOOKBACK: str = "newer_than:2d"
     COMMANDS_MAX_PER_SWEEP: int = 10
 
-    # Integrations
     COMPOSIO_API_KEY: str = ""
-    # Gmail auth config created in the Composio dashboard (Toolkits → Gmail)
     COMPOSIO_GMAIL_AUTH_CONFIG_ID: str = ""
-    # Where Composio sends the browser back after the Gmail OAuth grant
     COMPOSIO_GMAIL_CALLBACK_URL: str = "http://localhost:8000/"
-    # Manual tool execution requires a pinned toolkit version ("latest" is not
-    # allowed). Bump this to a newer version from the Composio dashboard as needed.
     COMPOSIO_GMAIL_TOOLKIT_VERSION: str = "20260702_01"
-    # Google Calendar auth config (custom OAuth client) for calendar features.
     COMPOSIO_GCAL_AUTH_CONFIG_ID: str = ""
     COMPOSIO_GCAL_TOOLKIT_VERSION: str = "20260721_00"
-    # Secret used to verify inbound Composio trigger webhooks (Composio dashboard
-    # → Settings → Webhooks). Leave empty to skip verification (dev only).
     COMPOSIO_WEBHOOK_SECRET: str = ""
 
-    # Mailman (batched delivery)
-    # Public base URL Composio posts trigger webhooks to (e.g. an ngrok URL in
-    # dev). The webhook path is `${PUBLIC_BASE_URL}/v1/webhooks/composio`.
     PUBLIC_BASE_URL: str = "http://localhost:8000"
-    # Default timezone for a user's delivery schedule until they set their own.
     MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
 
 

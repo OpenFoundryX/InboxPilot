@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from typing import Any, TypeVar
 
 from sqlalchemy.ext.asyncio import (

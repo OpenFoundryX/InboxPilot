@@ -10,14 +10,19 @@ FIND_FREE_SLOTS = "GOOGLECALENDAR_FIND_FREE_SLOTS"
 
 
 def is_connected(user_id: str) -> bool:
+
     res = get_composio().connected_accounts.list(
-        user_ids=[user_id], toolkit_slugs=["googlecalendar"], statuses=["ACTIVE"]
+        user_ids=[user_id], 
+        toolkit_slugs=["googlecalendar"], 
+        statuses=["ACTIVE"]
     )
+
     return bool(getattr(res, "items", None))
 
 
 def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[dict]:
     """Return calendar events between time_min and time_max (both tz-aware)."""
+
     resp = get_composio().tools.execute(
         EVENTS_LIST,
         {
@@ -28,8 +33,10 @@ def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[di
         },
         user_id=user_id,
     )
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {EVENTS_LIST} failed: {resp.get('error')}")
+
     data = resp.get("data") or {}
     return data.get("items") or data.get("events") or []
 
@@ -49,7 +56,7 @@ def _event_bounds(ev: dict) -> tuple[datetime, datetime] | None:
 
 
 def find_double_bookings(user_id: str, tz: str, days: int = 1) -> list[tuple[str, str]]:
-    """Return pairs of overlapping event summaries in the next `days` days."""
+
     tzinfo = ZoneInfo(tz)
     now = datetime.now(tzinfo)
     end = now + timedelta(days=days)
@@ -68,7 +75,7 @@ def find_double_bookings(user_id: str, tz: str, days: int = 1) -> list[tuple[str
         for j in range(i + 1, len(timed)):
             s2, e2, n2 = timed[j]
             if s2 >= e1:
-                break  # sorted by start; no more overlaps with i
+                break
             if s2 < e1 and s1 < e2:
                 clashes.append((n1, n2))
     return clashes
@@ -77,9 +84,14 @@ def find_double_bookings(user_id: str, tz: str, days: int = 1) -> list[tuple[str
 def _busy_periods(user_id: str, time_min: datetime, time_max: datetime, tz: str) -> list[tuple[datetime, datetime]]:
     resp = get_composio().tools.execute(
         FIND_FREE_SLOTS,
-        {"time_min": time_min.isoformat(), "time_max": time_max.isoformat(), "timezone": tz},
+        {
+            "time_min": time_min.isoformat(), 
+            "time_max": time_max.isoformat(), 
+            "timezone": tz
+        },
         user_id=user_id,
     )
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {FIND_FREE_SLOTS} failed: {resp.get('error')}")
     cals = ((resp.get("data") or {}).get("calendars") or {})
@@ -138,7 +150,4 @@ def free_slots(
 
 
 def format_slots(slots: list[tuple[datetime, datetime]]) -> str:
-    return "\n".join(
-        f"  • {s.strftime('%a %d %b, %-I:%M %p')} – {e.strftime('%-I:%M %p')}"
-        for s, e in slots
-    )
+    return "\n".join(f"  • {s.strftime('%a %d %b, %-I:%M %p')} – {e.strftime('%-I:%M %p')}" for s, e in slots)

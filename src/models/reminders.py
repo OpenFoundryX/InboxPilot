@@ -32,6 +32,4 @@ class Reminder(UUIDMixin, TimestampMixin, Base):
     thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     origin: Mapped[str] = mapped_column(String(16), default=ORIGIN_MANUAL, nullable=False)
-    delivered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

@@ -64,17 +64,11 @@ class HeldEmail(UUIDMixin, TimestampMixin, Base):
         UniqueConstraint("user_id", "gmail_message_id", name="uq_held_user_message"),
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     gmail_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
     thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sender: Mapped[str | None] = mapped_column(String(320), nullable=True)
     subject: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    received_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    released_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

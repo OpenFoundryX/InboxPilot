@@ -11,14 +11,14 @@ def configure_logging() -> None:
         format="%(message)s",
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     )
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer()
-            if not settings.DEBUG
-            else structlog.dev.ConsoleRenderer(),
+            if not settings.DEBUG else structlog.dev.ConsoleRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)

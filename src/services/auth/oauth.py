@@ -49,24 +49,28 @@ async def issue_tokens(db: AsyncSession, user: User) -> tuple[str, str]:
 
 async def rotate_refresh_token(db: AsyncSession, raw_refresh: str) -> tuple[str, str] | None:
     """Validate + rotate. Returns new (access, refresh) or None if invalid."""
-    row = await db.scalar(
-        select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh))
-    )
+
+    row = await db.scalar(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh)))
+
     if row is None or row.revoked or row.expires_at < datetime.now(timezone.utc):
         return None
-    row.revoked = True  # one-time use: rotate
+
+    row.revoked = True
     user = await db.get(User, row.user_id)
     await db.commit()
     return await issue_tokens(db, user)
 
 
 async def revoke_all(db: AsyncSession, user_id: uuid.UUID) -> None:
+
     rows = await db.scalars(
         select(RefreshToken).where(
             RefreshToken.user_id == user_id,
             RefreshToken.revoked.is_(False),
         )
     )
+
     for row in rows:
         row.revoked = True
+
     await db.commit()

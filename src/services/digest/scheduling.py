@@ -20,21 +20,27 @@ from services.mailman.rules import extract_address
 
 log = get_logger(__name__)
 
-SCHEDULED_LABEL = "inboxos-later"  # marks requests we've already drafted for
-_SYS = """Does this email ask to schedule/meet/find a time with the recipient? Return ONLY
-JSON: {"wants_meeting": bool, "duration_min": <int or null>}."""
+SCHEDULED_LABEL = "inboxos-later"
+
+SYS = """
+    Does this email ask to schedule/meet/find a time with the recipient? Return ONLY
+    JSON: {"wants_meeting": bool, "duration_min": <int or null>}
+"""
 
 
-def _client() -> OpenAI:
+def client() -> OpenAI:
     return OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
     """Scan recent VIP mail for meeting requests; draft slot proposals. Returns count."""
+
     if not calendar.is_connected(user_id):
         return 0
+
     vip = await db.scalar(select(VipRule).where(VipRule.user_id == uuid.UUID(user_id)))
     senders = list((vip.domains if vip else []) + (vip.addresses if vip else []))
+
     if not senders:
         return 0
 
@@ -48,11 +54,11 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
             continue
         content = f"Subject: {e.subject}\n{(e.body or e.snippet or '')[:1200]}"
         try:
-            resp = _client().chat.completions.create(
+            resp = client().chat.completions.create(
                 model=settings.OPENAI_MODEL,
                 temperature=0,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": _SYS}, {"role": "user", "content": content}],
+                messages=[{"role": "system", "content": SYS}, {"role": "user", "content": content}],
             )
             data = json.loads(resp.choices[0].message.content or "{}")
         except Exception:
@@ -67,11 +73,7 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
             continue
 
         requester = extract_address(e.sender) or ""
-        body = (
-            f"Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n"
-            + calendar.format_slots(slots)
-            + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
-        )
+        body = f"Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n" + calendar.format_slots(slots) + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
         subject = f"Re: {e.subject or 'Meeting'}"
         try:
             gmail.create_draft(user_id, requester, subject, body, thread_id=e.thread_id)
