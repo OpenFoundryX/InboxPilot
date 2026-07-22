@@ -30,6 +30,8 @@ class MailmanSettings(UUIDMixin, TimestampMixin, Base):
 
     delivery_mode: Mapped[str] = mapped_column(String(32), default=MODE_TIMES, nullable=False)
     interval_hours: Mapped[int | None] = mapped_column(nullable=True)
+    # Finer-grained interval (minutes); takes precedence over interval_hours.
+    interval_minutes: Mapped[int | None] = mapped_column(nullable=True)
 
     times_per_day: Mapped[int | None] = mapped_column(nullable=True, default=3)
 

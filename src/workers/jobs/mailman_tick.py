@@ -9,7 +9,7 @@ inbox as one batch.
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from core.database import SessionLocal, run_async
+from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from services.mailman import gmail_ops
 from services.mailman.scheduler import is_delivery_due
@@ -22,15 +22,15 @@ log = get_logger(__name__)
 @celery_app.task(name="mailman.tick")
 def tick() -> dict:
     """Evaluate every active user's schedule and release due batches."""
-    return run_async(_tick())
+    return run_async(with_worker_session(_tick))
 
 
-async def _tick() -> dict:
+async def _tick(db) -> dict:
     now_utc = datetime.now(timezone.utc)
     released_users = 0
     released_msgs = 0
 
-    async with SessionLocal() as db:
+    if True:
         settings_list = await list_active_settings(db)
 
         for settings in settings_list:
@@ -73,6 +73,5 @@ async def _tick() -> dict:
             released_msgs += len(message_ids)
             log.info("mailman.batch_released", user_id=uid, count=len(message_ids))
 
-        await db.commit()
-
+    # commit handled by with_worker_session
     return {"users": released_users, "messages": released_msgs}

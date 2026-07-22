@@ -2,7 +2,8 @@
 
 Batching is enforced by a server-side Gmail filter that skips the inbox for
 non-VIP mail (so no arrival notification fires); a scheduled worker releases the
-held mail back to the inbox at the user's delivery slots.
+held mail back to the inbox at the user's delivery slots. The app creates and
+maintains that filter automatically (needs the gmail.settings.basic scope).
 """
 
 from typing import Annotated
@@ -17,6 +18,7 @@ from models.mailman import (
     MODE_INTERVAL,
     MODE_TIMES,
     MailmanSettings,
+    VipRule,
 )
 from models.users import User
 from schemas.email import EmailSummary
@@ -28,7 +30,7 @@ from schemas.mailman import (
     VipUpdate,
 )
 from services.auth.dependencies import get_current_user
-from services.mailman import gmail_ops
+from services.mailman import filters, gmail_ops
 from services.mailman.store import get_or_create_settings, get_or_create_vip
 
 router = APIRouter(prefix="/mailman", tags=["mailman"])
@@ -36,10 +38,17 @@ router = APIRouter(prefix="/mailman", tags=["mailman"])
 CurrentUser = Annotated[User, Depends(get_current_user)]
 _MODES = {MODE_INTERVAL, MODE_TIMES, MODE_CUSTOM_DAILY}
 
-# NOTE: holding is done by a Gmail filter the user creates manually ("Skip the
-# Inbox" + apply the inboxos-later label), because programmatic filter creation
-# needs the gmail.settings.basic scope. The app only releases held mail on
-# schedule (that needs just gmail.modify, which the connection already has).
+
+async def _apply_hold_filter(settings: MailmanSettings, vip: VipRule) -> None:
+    """Sync the live Gmail hold filter to current VIP rules; persist the new id."""
+    settings.gmail_filter_id = await run_in_threadpool(
+        filters.apply_hold_filter,
+        settings.user_id,
+        domains=vip.domains,
+        addresses=vip.addresses,
+        keywords=vip.keywords,
+        existing_filter_id=settings.gmail_filter_id,
+    )
 
 
 @router.get("/settings", response_model=SettingsRead)
@@ -70,6 +79,10 @@ async def update_vip(payload: VipUpdate, user: CurrentUser, db: DbSession):
     vip = await get_or_create_vip(db, user.id)
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(vip, key, value)
+    # Keep the live filter in sync so VIP changes take effect immediately.
+    settings = await get_or_create_settings(db, user.id)
+    if settings.is_active:
+        await _apply_hold_filter(settings, vip)
     return vip
 
 
@@ -89,20 +102,25 @@ async def status(user: CurrentUser, db: DbSession) -> MailmanStatus:
 
 @router.post("/start", response_model=SettingsRead)
 async def start(user: CurrentUser, db: DbSession) -> MailmanSettings:
-    """Activate scheduled release. Assumes the user's skip-inbox filter exists."""
+    """Activate batching: install the skip-inbox Gmail filter."""
     settings = await get_or_create_settings(db, user.id)
-    await run_in_threadpool(gmail.ensure_labels, str(user.id))
+    vip = await get_or_create_vip(db, user.id)
+    await _apply_hold_filter(settings, vip)
     settings.is_active = True
     return settings
 
 
 @router.post("/stop", response_model=SettingsRead)
 async def stop(user: CurrentUser, db: DbSession) -> MailmanSettings:
-    """Stop scheduled release.
+    """Deactivate batching and remove the skip-inbox filter.
 
-    Note: the user's Gmail filter keeps holding new mail under `inboxos-later`;
-    to fully resume normal delivery, remove that filter in Gmail settings.
+    New mail resumes landing in the inbox normally. Already-held mail keeps its
+    `inboxos-later` label until the next delivery slot (or a manual release).
     """
     settings = await get_or_create_settings(db, user.id)
+    await run_in_threadpool(
+        filters.remove_hold_filter, str(user.id), settings.gmail_filter_id
+    )
+    settings.gmail_filter_id = None
     settings.is_active = False
     return settings

@@ -21,6 +21,9 @@ GMAIL_TOOLKIT = "gmail"
 FETCH_EMAILS = "GMAIL_FETCH_EMAILS"
 LIST_LABELS = "GMAIL_LIST_LABELS"
 CREATE_LABEL = "GMAIL_CREATE_LABEL"
+DELETE_LABEL = "GMAIL_DELETE_LABEL"
+SEND_EMAIL = "GMAIL_SEND_EMAIL"
+REPLY_TO_THREAD = "GMAIL_REPLY_TO_THREAD"
 
 # InboxPilot's organizational labels, provisioned into the user's Gmail, each
 # with a color. Gmail only accepts colors from a fixed 102-value palette, and
@@ -39,6 +42,78 @@ INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
     "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
     "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
 }
+
+
+def create_label(user_id: str, name: str) -> str:
+    """Create an arbitrary Gmail label by name; return its id.
+
+    Idempotent-ish: if a label with this name already exists, returns that id
+    instead of failing on Gmail's duplicate-name 409.
+    """
+    existing = _find_label_id(user_id, name)
+    if existing:
+        return existing
+    resp = get_composio().tools.execute(
+        CREATE_LABEL, {"label_name": name}, user_id=user_id
+    )
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {resp.get('error')}")
+    data = resp.get("data") or {}
+    return data.get("id") or (data.get("response_data") or {}).get("id")
+
+
+def delete_label(user_id: str, name: str) -> bool:
+    """Delete a Gmail label by name. Returns True if it existed and was removed."""
+    label_id = _find_label_id(user_id, name)
+    if not label_id:
+        return False
+    resp = get_composio().tools.execute(
+        DELETE_LABEL, {"label_id": label_id}, user_id=user_id
+    )
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {DELETE_LABEL} failed for {name!r}: {resp.get('error')}")
+    return True
+
+
+def _find_label_id(user_id: str, name: str) -> str | None:
+    resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
+    if resp.get("successful") is False:
+        return None
+    for label in (resp.get("data") or {}).get("labels") or []:
+        if (label.get("name") or "").casefold() == name.casefold():
+            return label.get("id")
+    return None
+
+
+def send_email(user_id: str, to: str, subject: str, body: str) -> str | None:
+    """Send a plain-text email; return the sent message id if available."""
+    resp = get_composio().tools.execute(
+        SEND_EMAIL,
+        {"recipient_email": to, "subject": subject, "body": body, "is_html": False},
+        user_id=user_id,
+    )
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {SEND_EMAIL} failed: {resp.get('error')}")
+    data = resp.get("data") or {}
+    return data.get("id") or (data.get("response_data") or {}).get("id")
+
+
+def reply_in_thread(user_id: str, thread_id: str, to: str, body: str) -> str | None:
+    """Reply within an existing thread (keeps the conversation threaded)."""
+    resp = get_composio().tools.execute(
+        REPLY_TO_THREAD,
+        {
+            "thread_id": thread_id,
+            "recipient_email": to,
+            "message_body": body,
+            "is_html": False,
+        },
+        user_id=user_id,
+    )
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {REPLY_TO_THREAD} failed: {resp.get('error')}")
+    data = resp.get("data") or {}
+    return data.get("id") or (data.get("response_data") or {}).get("id")
 
 
 def get_active_connection(user_id: str) -> Any | None:

@@ -12,6 +12,21 @@ beat_schedule: dict = {
         "task": "mailman.tick",
         "schedule": 60.0,
     },
+    # Auto-label recently-arrived mail into the org labels.
+    "classify-sweep": {
+        "task": "classify.sweep",
+        "schedule": 60.0,
+    },
+    # Execute commands the user emails to themselves.
+    "commands-sweep": {
+        "task": "commands.sweep",
+        "schedule": 60.0,
+    },
+    # Run due user routines (briefings, digests, nudges).
+    "routines-sweep": {
+        "task": "routines.sweep",
+        "schedule": 60.0,
+    },
 }
 
 __all__ = ["beat_schedule", "crontab"]

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # LLM providers
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
+    # Model used to auto-classify incoming email into org labels.
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    # Mail-command sweep (control the app by emailing yourself).
+    COMMANDS_LOOKBACK: str = "newer_than:2d"
+    COMMANDS_MAX_PER_SWEEP: int = 10
 
     # Integrations
     COMPOSIO_API_KEY: str = ""

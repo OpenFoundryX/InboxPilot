@@ -39,6 +39,21 @@ def _modify(user_id: str, message_ids: list[str], add: list[str], remove: list[s
         raise RuntimeError(f"Composio {BATCH_MODIFY} failed: {resp.get('error')}")
 
 
+def add_label(user_id: str, message_ids: list[str], label_name: str) -> None:
+    """Apply a label (by name) to messages, resolving its id first."""
+    label_id = resolve_label_id(user_id, label_name)
+    if not label_id:
+        raise RuntimeError(f"label {label_name!r} not found for user {user_id}")
+    _modify(user_id, message_ids, add=[label_id], remove=[])
+
+
+def remove_labels(user_id: str, message_ids: list[str], label_names: list[str]) -> None:
+    """Remove the named labels from messages (ignores ones that don't exist)."""
+    ids = [lid for n in label_names if (lid := resolve_label_id(user_id, n))]
+    if ids:
+        _modify(user_id, message_ids, add=[], remove=ids)
+
+
 def hold(user_id: str, message_ids: list[str]) -> None:
     """Remove messages from the inbox and add the holding label."""
     hold_id = resolve_label_id(user_id, HOLD_LABEL_NAME)

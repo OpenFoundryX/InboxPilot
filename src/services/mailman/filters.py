@@ -6,8 +6,13 @@ never fires an arrival notification). VIP senders/keywords are excluded via the
 filter's negatedQuery, so they land in the inbox and notify normally.
 """
 
+from fastapi import status
+
+from core.exceptions import AppError
 from core.logging import get_logger
+from integrations.composio import gmail
 from integrations.composio.composio_client import get_composio
+from services.mailman import gmail_ops
 
 log = get_logger(__name__)
 
@@ -17,6 +22,11 @@ DELETE_FILTER = "GMAIL_DELETE_FILTER"
 # Matches everything the user *receives* (i.e. not sent by them). Gmail filters
 # need at least one criteria field; this is our catch-all.
 INBOUND_QUERY = "-from:me"
+
+
+class HoldLabelMissing(AppError):
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    detail = "could not resolve the inboxos-later label"
 
 
 def vip_query(domains: list[str], addresses: list[str], keywords: list[str]) -> str:
@@ -29,6 +39,64 @@ def vip_query(domains: list[str], addresses: list[str], keywords: list[str]) -> 
     if kws:
         parts.append("(" + " OR ".join(kws) + ")")
     return " OR ".join(parts)
+
+
+def apply_hold_filter(
+    user_id: str,
+    *,
+    domains: list[str],
+    addresses: list[str],
+    keywords: list[str],
+    existing_filter_id: str | None,
+) -> str:
+    """Install/replace the skip-inbox filter. Returns the new Gmail filter id.
+
+    Blocking Composio calls — invoke from a Celery task or a threadpool.
+    """
+    if existing_filter_id:
+        try:
+            delete_filter(user_id, existing_filter_id)
+        except Exception:
+            log.warning(
+                "mailman.hold_filter_delete_failed",
+                user_id=user_id,
+                filter_id=existing_filter_id,
+                exc_info=True,
+            )
+
+    gmail.ensure_labels(user_id)
+    # Label may have just been created; drop any cached miss for this process.
+    gmail_ops.resolve_label_id.cache_clear()
+    hold_label_id = gmail_ops.resolve_label_id(user_id, gmail_ops.HOLD_LABEL_NAME)
+    if not hold_label_id:
+        raise HoldLabelMissing()
+
+    filter_id = create_hold_filter(
+        user_id,
+        hold_label_id,
+        domains=domains,
+        addresses=addresses,
+        keywords=keywords,
+    )
+    if not filter_id:
+        raise RuntimeError("create_hold_filter returned no id")
+
+    return filter_id
+
+
+def remove_hold_filter(user_id: str, filter_id: str | None) -> None:
+    """Delete the skip-inbox filter if present. Best-effort; logs on failure."""
+    if not filter_id:
+        return
+    try:
+        delete_filter(user_id, filter_id)
+    except Exception:
+        log.warning(
+            "mailman.hold_filter_delete_failed",
+            user_id=user_id,
+            filter_id=filter_id,
+            exc_info=True,
+        )
 
 
 def create_hold_filter(

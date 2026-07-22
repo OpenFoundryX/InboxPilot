@@ -20,6 +20,9 @@ TASK_MODULES = [
     "workers.jobs.reply_draft_job",
     "workers.jobs.sync_last_7_days",
     "workers.jobs.mailman_tick",
+    "workers.jobs.classify_sweep",
+    "workers.jobs.commands_sweep",
+    "workers.jobs.routines_sweep",
     "agents.tasks",
 ]
 
