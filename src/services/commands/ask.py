@@ -8,7 +8,6 @@ including who sent what and which files were truly attached vs. only quoted in a
 """
 
 import json
-import re
 
 from openai import OpenAI
 
@@ -60,11 +59,13 @@ Example — question "did Pradeep send me the Mahindra users excel sheet?":
 _ANSWER_SYS = """You are InboxOS, the user's email assistant. Answer the user's
 question directly and concisely, grounded ONLY in the email excerpts provided.
 
-Be specific and cite senders, subjects and dates where it helps. When you reference
-an email, ALWAYS include its Link so the user can click straight to it in Gmail.
-The message is PLAIN TEXT, so paste the Link as a bare URL exactly as given
-(e.g. Open: https://mail.google.com/...). NEVER wrap it in markdown like
-[text](url) — brackets show as literal characters. Do NOT list attachment file names.
+Format the reply in light Markdown for a clean email:
+- Use **bold** for key facts (names, dates, the direct answer).
+- Use a bullet list ("- ") when you list multiple emails or items.
+- When you reference an email, ALWAYS link to it as a Markdown link using its Link,
+  with a short label — e.g. [View email](https://mail.google.com/...). Never paste a
+  raw URL and never list attachment file names.
+- Keep it tight: a one-line direct answer first, then supporting detail.
 
 Attachment awareness: each email shows how many files are attached. Distinguish a
 real attached file from content merely quoted or forwarded inside an email body — if
@@ -73,15 +74,6 @@ contain the answer, say what you found, state plainly what's missing, and sugges
 concrete next step. Never invent emails, senders, or links.
 
 End your reply with a sign-off line containing only: — InboxOS"""
-
-
-# Replies are sent as plain text, where markdown link syntax renders as literal
-# brackets. Collapse [label](url) -> "label (url)" so the URL stays clickable.
-_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
-
-
-def _plain_links(text: str) -> str:
-    return _MD_LINK.sub(lambda m: f"{m.group(1)}: {m.group(2)}", text)
 
 
 def _client() -> OpenAI:
@@ -139,36 +131,47 @@ def _search_all(user_id: str, queries: list[str]) -> list[EmailSummary]:
     return list(by_id.values())
 
 
-# Gmail web permalink to a conversation. `u/0` targets the primary signed-in
-# account; the hex thread id from the Gmail API resolves directly in the fragment.
-_THREAD_URL = "https://mail.google.com/mail/u/0/#all/{thread_id}"
+# Gmail web permalink to a conversation. Putting the account's email address in the
+# `/u/<...>/` slot pins the link to the right account even when several Google
+# accounts are signed into the same browser (bare `u/0` would open the wrong one).
+# The hex thread id from the Gmail API resolves directly in the URL fragment.
+def _thread_link(thread_id: str | None, account_email: str | None) -> str:
+    if not thread_id:
+        return "(no link)"
+    slot = account_email or "0"
+    return f"https://mail.google.com/mail/u/{slot}/#all/{thread_id}"
 
 
-def _thread_link(thread_id: str | None) -> str:
-    return _THREAD_URL.format(thread_id=thread_id) if thread_id else "(no link)"
-
-
-def _corpus(hits: list[EmailSummary]) -> str:
+def _corpus(hits: list[EmailSummary], account_email: str | None) -> str:
     blocks = []
     for h in hits:
         n = len(h.attachments)
         atts = f"{n} file(s)" if n else "none"
         blocks.append(
             f"From: {h.sender}\nDate: {h.date}\nSubject: {h.subject}\n"
-            f"Attachments: {atts}\nLink: {_thread_link(h.thread_id)}\n"
+            f"Attachments: {atts}\nLink: {_thread_link(h.thread_id, account_email)}\n"
             f"{(h.body or h.snippet or '')[:800]}"
         )
     return "\n\n---\n\n".join(blocks)
 
 
-def answer_question(user_id: str, subject: str | None, body: str | None) -> str:
-    """Return a grounded answer to the user's question (threaded reply text)."""
+def answer_question(
+    user_id: str,
+    subject: str | None,
+    body: str | None,
+    account_email: str | None = None,
+) -> str:
+    """Return a grounded answer to the user's question (threaded reply text).
+
+    `account_email` pins the Gmail "View email" links to the right signed-in
+    account; when omitted, links fall back to the primary account (`u/0`).
+    """
     queries = _plan_queries(subject, body)
     hits = _search_all(user_id, queries) if queries else []
 
     user_msg = f"Question:\nSubject: {subject or ''}\n{(body or '')[:1500]}"
     if hits:
-        user_msg += f"\n\nRelevant emails from their inbox:\n{_corpus(hits)}"
+        user_msg += f"\n\nRelevant emails from their inbox:\n{_corpus(hits, account_email)}"
     else:
         user_msg += "\n\n(No relevant emails were found in their inbox.)"
 
@@ -186,5 +189,4 @@ def answer_question(user_id: str, subject: str | None, body: str | None) -> str:
         queries=queries,
         sources=len(hits),
     )
-    answer = (resp.choices[0].message.content or "").strip()
-    return _plain_links(answer) or "I couldn't find an answer."
+    return (resp.choices[0].message.content or "").strip() or "I couldn't find an answer."

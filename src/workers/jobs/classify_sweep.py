@@ -6,6 +6,8 @@ the chosen label. Idempotent: once labeled, a message no longer matches the
 "unlabeled" query, so it won't be re-classified.
 """
 
+from functools import lru_cache
+
 from integrations.composio import gmail
 from integrations.composio.composio_client import get_composio
 from core.logging import get_logger
@@ -15,9 +17,27 @@ from workers.celery_app import celery_app
 
 log = get_logger(__name__)
 
+
+@lru_cache(maxsize=256)
+def _ensure_labels_once(user_id: str) -> bool:
+    """Provision the org labels for a user, at most once per worker process.
+
+    The classifier can only apply a label that exists in the user's Gmail.
+    Accounts that skipped (or failed) the initial sync would otherwise crash the
+    sweep with `label '<name>' not found`. This is idempotent and cheap (one
+    LIST + creates only what's missing); the lru_cache means it runs once per
+    user per process — a raised error is not cached, so it retries next sweep.
+    """
+    gmail.ensure_labels(user_id)
+    return True
+
 # How far back / how many to consider each sweep (cost + latency guardrails).
-LOOKBACK = "newer_than:2d"
-MAX_PER_SWEEP = 15
+# Lookback matches the initial sync window (last 7 days) so mail surfaced by a
+# sync doesn't fall outside the classifier's reach and stay permanently untagged.
+# The per-sweep cap bounds cost/latency; a backlog is chewed down over successive
+# minute-ly sweeps (25/min = 1500/hr) until the "unlabeled" query drains to zero.
+LOOKBACK = "newer_than:7d"
+MAX_PER_SWEEP = 25
 
 
 def _unlabeled_query() -> str:
@@ -55,6 +75,9 @@ def sweep() -> dict:
 
 
 def _sweep_user(user_id: str) -> int:
+    # Make sure the labels we're about to assign actually exist in this account
+    # (self-heals accounts that never completed the initial label provisioning).
+    _ensure_labels_once(user_id)
     emails = gmail.fetch_by_query(user_id, _unlabeled_query(), MAX_PER_SWEEP)
     labeled = 0
     for e in emails:

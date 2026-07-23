@@ -8,7 +8,7 @@ log = get_logger(__name__)
 
 
 @celery_app.task(name="jobs.sync_last_7_days")
-def sync_last_7_days(user_id: str, max_results: int = 25) -> dict:
+def sync_last_7_days(user_id: str, max_results: int = 100) -> dict:
     """Fetch last-7-days emails for `user_id` (the Composio entity / app user id).
 
     Returns a small summary; the emails themselves are included so the result

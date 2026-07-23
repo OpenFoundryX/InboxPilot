@@ -65,8 +65,8 @@ def apply_hold_filter(
             )
 
     gmail.ensure_labels(user_id)
-    # Label may have just been created; drop any cached miss for this process.
-    gmail_ops.resolve_label_id.cache_clear()
+    # Label may have just been created; drop stale resolutions for this process.
+    gmail_ops.clear_label_cache()
     hold_label_id = gmail_ops.resolve_label_id(user_id, gmail_ops.HOLD_LABEL_NAME)
     if not hold_label_id:
         raise HoldLabelMissing()

@@ -36,8 +36,9 @@ Each action is one of these shapes (include only the fields that apply):
      "dnd_enabled": bool, "dnd_start": "22:00", "dnd_end": "07:00", "timezone": "Asia/Kolkata"}}
 - {{"type": "add_vip", "domains": ["stripe.com"], "addresses": ["a@b.com"], "keywords": ["OTP"]}}
 - {{"type": "remove_vip", "domains": [...], "addresses": [...], "keywords": [...]}}
-- {{"type": "create_rule", "criteria": {{"from": "x@y.com"}}, "archive": true}}
-     (criteria may use from/to/subject/query; also optional: apply_label, archive, star, mark_read, trash)
+- {{"type": "create_rule", "criteria": {{"from": "x@y.com"}}, "archive": true, "apply_to_existing": true}}
+     (criteria may use from/to/subject/query; also optional: apply_label, archive, star, mark_read, trash;
+      set apply_to_existing=true to ALSO apply the effect to mail already in the mailbox, not just future mail)
 - {{"type": "manage_routine", "routine": "briefing", "enabled": true, "run_time": "08:00", "weekday": null}}
      (routine is one of: "briefing" (daily digest), "chase_threads" (nudge threads awaiting a reply),
       "reconnect" (people to reach out to), "deadline_scan" (turn deadlines into reminders),
@@ -61,6 +62,14 @@ Rules:
 - "every N minutes/hours" -> delivery_mode=interval with interval_minutes.
 - If asked to auto-label, apply_label should be one of: {", ".join(LABEL_NAMES)} (or a label the user names).
 - "archive"/"skip inbox" -> create_rule with archive=true. "delete"/"trash" -> trash=true.
+- If the user says "current"/"existing"/"already"/"all my ... (that are already here)" alongside a rule,
+  ALSO set apply_to_existing=true so mail already in the mailbox is acted on, not just future mail.
+  "archive current AND future X" is a SINGLE create_rule with archive=true and apply_to_existing=true.
+- The user's own labels are: {", ".join(LABEL_NAMES)}. These are labels, NOT Gmail categories.
+  When the user names one of them (e.g. "marketing emails", "my fyi mail"), the criteria MUST be
+  query "label:<name>" — e.g. "marketing" -> "label:marketing", "to do" -> "label:to do".
+  Do NOT translate "marketing" to "category:promotions". Only use "category:promotions" when the
+  user literally says "promotions" or "promotional".
 - "send me a briefing/summary every morning at 8" -> manage_routine briefing enabled run_time="08:00".
 - "give me a briefing/summary now" or "what needs my attention" -> send_briefing_now.
 - Times are 24h "HH:MM". Be conservative: only emit actions you are confident about."""

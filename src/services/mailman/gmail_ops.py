@@ -5,8 +5,6 @@ adding our holding label (`inboxos-later`). Releasing = the reverse. Call these
 from Celery tasks or a threadpool.
 """
 
-from functools import lru_cache
-
 from integrations.composio.composio_client import get_composio
 from integrations.composio.gmail import FETCH_EMAILS, LIST_LABELS
 
@@ -14,17 +12,38 @@ BATCH_MODIFY = "GMAIL_BATCH_MODIFY_MESSAGES"
 INBOX_LABEL = "INBOX"
 HOLD_LABEL_NAME = "inboxos-later"
 
+# Per-process cache of resolved label ids, keyed by (user_id, casefolded name).
+# We deliberately cache ONLY successful resolutions. Caching a miss would be a
+# footgun: a transient LIST_LABELS failure — or a lookup that happens to run
+# before a label is provisioned — would pin `None` for the whole worker process,
+# making every later add_label for that label fail even once the label exists.
+_LABEL_ID_CACHE: dict[tuple[str, str], str] = {}
 
-@lru_cache(maxsize=256)
+
 def resolve_label_id(user_id: str, name: str) -> str | None:
-    """Resolve a Gmail label name to its id for a user (cached per process)."""
+    """Resolve a Gmail label name to its id for a user (successful lookups cached).
+
+    On a cache miss we re-list the account's labels and warm the cache with every
+    label found, so a single LIST call resolves many names. A genuine miss is not
+    cached — the next call lists again, which self-heals once the label appears.
+    """
+    key = (user_id, name.casefold())
+    if hit := _LABEL_ID_CACHE.get(key):
+        return hit
     resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
     if resp.get("successful") is False:
         return None
     for label in (resp.get("data") or {}).get("labels") or []:
-        if (label.get("name") or "").casefold() == name.casefold():
-            return label.get("id")
-    return None
+        lid = label.get("id")
+        lname = (label.get("name") or "").casefold()
+        if lid and lname:
+            _LABEL_ID_CACHE[(user_id, lname)] = lid
+    return _LABEL_ID_CACHE.get(key)
+
+
+def clear_label_cache() -> None:
+    """Drop all cached label-id resolutions (e.g. after creating/deleting labels)."""
+    _LABEL_ID_CACHE.clear()
 
 
 def _modify(user_id: str, message_ids: list[str], add: list[str], remove: list[str]) -> None:

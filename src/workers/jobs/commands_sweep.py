@@ -20,6 +20,7 @@ from services.commands import handlers
 from services.commands.ask import answer_question
 from services.commands.chat import compose_reply
 from services.commands.parser import parse_command
+from services.commands.render import to_html
 from services.mailman import gmail_ops
 from services.mailman.store import get_or_create_settings
 from workers.celery_app import celery_app
@@ -137,16 +138,25 @@ def _reply_in_thread(
         if had_actions:
             text = compose_reply(command.subject, command.body, results)
         else:
-            text = answer_question(user_id, command.subject, command.body)
+            text = answer_question(
+                user_id, command.subject, command.body, account_email=email
+            )
     except Exception:
         log.exception("commands.compose_failed", user_id=user_id)
         return
 
+    # Render the Markdown reply into a clean, inline-styled HTML email.
+    body_html = to_html(text)
+
     try:
         if command.thread_id:
-            reply_id = gmail.reply_in_thread(user_id, command.thread_id, email, text)
+            reply_id = gmail.reply_in_thread(
+                user_id, command.thread_id, email, body_html, is_html=True
+            )
         else:
-            reply_id = gmail.send_email(user_id, email, "Re: (your note)", text)
+            reply_id = gmail.send_email(
+                user_id, email, "Re: (your note)", body_html, is_html=True
+            )
     except Exception:
         log.exception("commands.reply_failed", user_id=user_id)
         return

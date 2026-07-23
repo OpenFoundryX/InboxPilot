@@ -101,12 +101,13 @@ def _find_label_id(user_id: str, name: str) -> str | None:
 
 def send_email(
     user_id: str, 
-    to: str, 
-    subject: str, 
-    body: str, 
-    from_email: str | None = None
+    to: str,
+    subject: str,
+    body: str,
+    from_email: str | None = None,
+    is_html: bool = False,
 ) -> str | None:
-    """Send a plain-text email; return the sent message id if available.
+    """Send an email; return the sent message id if available.
 
     When `from_email` is a +alias of the account (e.g. you+inboxos@gmail.com),
     the message is delivered to the inbox as genuinely *received* mail with that
@@ -117,7 +118,7 @@ def send_email(
         "recipient_email": to,
         "subject": subject,
         "body": body,
-        "is_html": False,
+        "is_html": is_html,
     }
 
     if from_email:
@@ -143,7 +144,9 @@ def create_draft(
     return data.get("id") or data.get("response_data").get("id")
 
 
-def reply_in_thread(user_id: str, thread_id: str, to: str, body: str) -> str | None:
+def reply_in_thread(
+    user_id: str, thread_id: str, to: str, body: str, is_html: bool = False
+) -> str | None:
     """Reply within an existing thread (keeps the conversation threaded)."""
     resp = get_composio().tools.execute(
         REPLY_TO_THREAD,
@@ -151,7 +154,7 @@ def reply_in_thread(user_id: str, thread_id: str, to: str, body: str) -> str | N
             "thread_id": thread_id,
             "recipient_email": to,
             "message_body": body,
-            "is_html": False,
+            "is_html": is_html,
         },
         user_id=user_id,
     )
@@ -223,20 +226,36 @@ def ensure_labels(user_id: str) -> list[str]:
     return created
 
 
+# Per-request page size. Kept small on purpose: each message carries its full
+# body, so large pages (e.g. 100) can blow Composio's response-payload limit
+# (HTTP 413). We paginate to reach larger `max_results` instead.
+_FETCH_PAGE = 25
+
+
 def fetch_by_query(user_id: str, query: str, max_results: int = 25) -> list[EmailSummary]:
-    """Fetch emails matching a Gmail search query."""
-    resp = get_composio().tools.execute(
-        FETCH_EMAILS,
-        {"query": query, "max_results": max_results},
-        user_id=user_id,
-    )
+    """Fetch up to `max_results` emails matching a Gmail search query.
 
-    # The SDK returns a plain dict: {"data": {...}, "error": ..., "successful": bool}.
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
-
-    messages = (resp.get("data") or {}).get("messages") or []
-    return [_summarize(m) for m in messages]
+    Pages through `GMAIL_FETCH_EMAILS` (following `nextPageToken`) until it has
+    `max_results` messages or the query is exhausted — a single call only returns
+    one page, so without this a large `max_results` would be silently truncated.
+    """
+    client = get_composio()
+    out: list[EmailSummary] = []
+    token: str | None = None
+    while len(out) < max_results:
+        payload: dict = {"query": query, "max_results": min(_FETCH_PAGE, max_results - len(out))}
+        if token:
+            payload["page_token"] = token
+        resp = client.tools.execute(FETCH_EMAILS, payload, user_id=user_id)
+        # The SDK returns a plain dict: {"data": {...}, "error": ..., "successful": bool}.
+        if resp.get("successful") is False:
+            raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
+        data = resp.get("data") or {}
+        out.extend(_summarize(m) for m in data.get("messages") or [])
+        token = data.get("nextPageToken") or data.get("next_page_token")
+        if not token:
+            break
+    return out[:max_results]
 
 
 def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
