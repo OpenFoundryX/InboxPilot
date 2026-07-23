@@ -15,3 +15,4 @@ class EmailSummary(BaseModel):
     body: str | None = None  # full decoded plain-text body
     date: datetime | None = None
     labels: list[str] = []
+    attachments: list[str] = []  # attachment filenames (e.g. "report.xlsx")

@@ -255,6 +255,11 @@ def _summarize(m: dict) -> EmailSummary:
         snippet = m.get("messageText")
     if isinstance(snippet, str):
         snippet = snippet.strip()[:200]
+    attachments = [
+        a.get("filename")
+        for a in (m.get("attachmentList") or [])
+        if isinstance(a, dict) and a.get("filename")
+    ]
     return EmailSummary(
         id=m.get("messageId"),
         thread_id=m.get("threadId"),
@@ -265,4 +270,5 @@ def _summarize(m: dict) -> EmailSummary:
         body=m.get("messageText"),
         date=m.get("messageTimestamp"),
         labels=m.get("labelIds") or [],
+        attachments=attachments,
     )
