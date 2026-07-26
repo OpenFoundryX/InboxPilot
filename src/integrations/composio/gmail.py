@@ -13,9 +13,14 @@ Call them from Celery tasks directly, or from async code via a threadpool.
 
 from typing import Any
 
+from composio_client import APIStatusError
+
 from core.config import settings
+from core.logging import get_logger
 from integrations.composio.composio_client import get_composio
 from schemas.email import EmailSummary
+
+log = get_logger(__name__)
 
 GMAIL_TOOLKIT = "gmail"
 FETCH_EMAILS = "GMAIL_FETCH_EMAILS"
@@ -26,6 +31,10 @@ SEND_EMAIL = "GMAIL_SEND_EMAIL"
 REPLY_TO_THREAD = "GMAIL_REPLY_TO_THREAD"
 CREATE_DRAFT = "GMAIL_CREATE_EMAIL_DRAFT"
 
+# Per-request page size. Full bodies (verbose=true) easily hit Composio's 413.
+FETCH_PAGE = 25
+# Hard ceiling when fetching "all" so a huge mailbox can't run forever.
+FETCH_ALL_CAP = 2000
 
 INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
 
@@ -43,16 +52,22 @@ INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
 }
 
 
+def _find_label_id(user_id: str, name: str) -> str | None:
+    resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
+    if resp.get("successful") is False:
+        return None
+    for label in resp.get("data").get("labels") or []:
+        if label.get("name").casefold() == name.casefold():
+            return label.get("id")
+    return None
+
+
 def create_label(user_id: str, name: str) -> str:
     """Create an arbitrary Gmail label by name; return its id.
 
     Idempotent-ish: if a label with this name already exists, returns that id
     instead of failing on Gmail's duplicate-name 409.
     """
-
-    existing = _find_label_id(user_id, name)
-    if existing:
-        return existing
 
     resp = get_composio().tools.execute(
         CREATE_LABEL, 
@@ -65,8 +80,7 @@ def create_label(user_id: str, name: str) -> str:
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {resp.get('error')}")
 
-    data = resp.get("data")
-    return data.get("id") or data.get("response_data").get("id")
+    return resp.get("data").get("id")
 
 
 def delete_label(user_id: str, name: str) -> bool:
@@ -86,17 +100,8 @@ def delete_label(user_id: str, name: str) -> bool:
 
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {DELETE_LABEL} failed for {name!r}: {resp.get('error')}")
+
     return True
-
-
-def _find_label_id(user_id: str, name: str) -> str | None:
-    resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
-    if resp.get("successful") is False:
-        return None
-    for label in (resp.get("data") or {}).get("labels") or []:
-        if label.get("name").casefold() == name.casefold():
-            return label.get("id")
-    return None
 
 
 def send_email(
@@ -126,28 +131,29 @@ def send_email(
     resp = get_composio().tools.execute(SEND_EMAIL, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {SEND_EMAIL} failed: {resp.get('error')}")
-    data = resp.get("data")
-    return data.get("id") or data.get("response_data").get("id")
+
+    return resp.get("data").get("id")
 
 
-def create_draft(
-    user_id: str, to: str, subject: str, body: str, thread_id: str | None = None
-) -> str | None:
-    """Create a draft reply (threaded when thread_id is given). Never sends."""
+def create_draft(user_id: str, to: str, subject: str, body: str, thread_id: str | None = None) -> str | None:
+    """
+        Create a draft reply (threaded when thread_id is given). Never sends.
+    """
+
     payload: dict = {"recipient_email": to, "subject": subject, "body": body, "is_html": False}
     if thread_id:
         payload["thread_id"] = thread_id
+
     resp = get_composio().tools.execute(CREATE_DRAFT, payload, user_id=user_id)
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {CREATE_DRAFT} failed: {resp.get('error')}")
-    data = resp.get("data")
-    return data.get("id") or data.get("response_data").get("id")
+
+    return resp.get("data").get("id")
 
 
-def reply_in_thread(
-    user_id: str, thread_id: str, to: str, body: str, is_html: bool = False
-) -> str | None:
+def reply_in_thread(user_id: str, thread_id: str, to: str, body: str, is_html: bool = False) -> str | None:
     """Reply within an existing thread (keeps the conversation threaded)."""
+
     resp = get_composio().tools.execute(
         REPLY_TO_THREAD,
         {
@@ -158,10 +164,11 @@ def reply_in_thread(
         },
         user_id=user_id,
     )
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {REPLY_TO_THREAD} failed: {resp.get('error')}")
-    data = resp.get("data")
-    return data.get("id") or data.get("response_data").get("id")
+
+    return resp.get("data").get("id")
 
 
 def get_active_connection(user_id: str) -> Any | None:
@@ -184,16 +191,19 @@ def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
     if not settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID:
         raise RuntimeError("COMPOSIO_GMAIL_AUTH_CONFIG_ID is not configured")
 
+    from integrations.composio.triggers import gmail_oauth_callback_url
+
     request = get_composio().connected_accounts.link(
         user_id=user_id,
         auth_config_id=settings.COMPOSIO_GMAIL_AUTH_CONFIG_ID,
-        callback_url=callback_url or settings.COMPOSIO_GMAIL_CALLBACK_URL,
+        callback_url=callback_url or gmail_oauth_callback_url(user_id),
     )
     return request.redirect_url
 
 
 def ensure_labels(user_id: str) -> list[str]:
-    """Ensure InboxPilot's organizational labels exist in the user's Gmail.
+    """
+    Ensure InboxPilot's organizational labels exist in the user's Gmail.
 
     Idempotent: lists the account's existing labels and creates only the ones
     that are missing (case-insensitive match, since Gmail rejects duplicate
@@ -226,42 +236,78 @@ def ensure_labels(user_id: str) -> list[str]:
     return created
 
 
-# Per-request page size. Kept small on purpose: each message carries its full
-# body, so large pages (e.g. 100) can blow Composio's response-payload limit
-# (HTTP 413). We paginate to reach larger `max_results` instead.
-_FETCH_PAGE = 25
+def fetch_by_query(
+    user_id: str,
+    query: str,
+    max_results: int | None = 25,
+    *,
+    verbose: bool = False,
+) -> list[EmailSummary]:
+    """Fetch emails matching a Gmail search query.
 
+    Pages through `GMAIL_FETCH_EMAILS` via `nextPageToken` until it has
+    `max_results` messages, or — when `max_results` is None — until the query
+    is exhausted (capped at `FETCH_ALL_CAP`).
 
-def fetch_by_query(user_id: str, query: str, max_results: int = 25) -> list[EmailSummary]:
-    """Fetch up to `max_results` emails matching a Gmail search query.
-
-    Pages through `GMAIL_FETCH_EMAILS` (following `nextPageToken`) until it has
-    `max_results` messages or the query is exhausted — a single call only returns
-    one page, so without this a large `max_results` would be silently truncated.
+    Defaults to metadata-only (`verbose=False`) to stay under Composio's
+    response size limit. Pass `verbose=True` when you need full bodies.
     """
     client = get_composio()
     out: list[EmailSummary] = []
     token: str | None = None
-    while len(out) < max_results:
-        payload: dict = {"query": query, "max_results": min(_FETCH_PAGE, max_results - len(out))}
+    limit = FETCH_ALL_CAP if max_results is None else max_results
+    page = FETCH_PAGE
+
+    while len(out) < limit:
+        want = min(page, limit - len(out))
+        payload: dict = {
+            "query": query,
+            "max_results": want,
+            "verbose": verbose,
+            "include_payload": verbose,
+        }
         if token:
             payload["page_token"] = token
-        resp = client.tools.execute(FETCH_EMAILS, payload, user_id=user_id)
-        # The SDK returns a plain dict: {"data": {...}, "error": ..., "successful": bool}.
+        try:
+            resp = client.tools.execute(FETCH_EMAILS, payload, user_id=user_id)
+        except APIStatusError as exc:
+            if getattr(exc, "status_code", None) == 413 and want > 1:
+                page = max(1, want // 2)
+                log.warning(
+                    "gmail.fetch_payload_too_large",
+                    user_id=user_id,
+                    retry_page=page,
+                )
+                continue
+            raise
         if resp.get("successful") is False:
             raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
         data = resp.get("data") or {}
-        out.extend(_summarize(m) for m in data.get("messages") or [])
+        batch = data.get("messages") or []
+        out.extend(_summarize(m) for m in batch)
         token = data.get("nextPageToken") or data.get("next_page_token")
-        if not token:
+        if not token or not batch:
             break
-    return out[:max_results]
+
+    if max_results is None and token:
+        log.warning(
+            "gmail.fetch_all_capped",
+            user_id=user_id,
+            fetched=len(out),
+            cap=FETCH_ALL_CAP,
+        )
+    return out[:limit]
 
 
-def fetch_recent_emails(user_id: str, days: int = 7, max_results: int = 25) -> list[EmailSummary]:
+def fetch_recent_emails(
+    user_id: str,
+    days: int = 30,
+    max_results: int | None = None,
+) -> list[EmailSummary]:
     """Fetch the user's emails from the last `days` days.
 
-    Uses Gmail's `newer_than:Nd` search operator. Requires an ACTIVE connection.
+    By default pages until the window is exhausted (up to `FETCH_ALL_CAP`).
+    Pass `max_results` to stop earlier. Uses Gmail's `newer_than:Nd` operator.
     """
     return fetch_by_query(user_id, f"newer_than:{days}d", max_results)
 

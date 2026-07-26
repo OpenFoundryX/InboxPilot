@@ -12,6 +12,15 @@ def configure_logging() -> None:
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     )
 
+    # SQLAlchemy's `echo` attaches its own handler *and* the record propagates
+    # to the root one, so every statement was logged twice. Pin the loggers here
+    # so only SQL_ECHO controls them.
+    sql_level = logging.INFO if settings.SQL_ECHO else logging.WARNING
+    for name in ("sqlalchemy.engine", "sqlalchemy.pool", "sqlalchemy.orm"):
+        sql_logger = logging.getLogger(name)
+        sql_logger.setLevel(sql_level)
+        sql_logger.propagate = False
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

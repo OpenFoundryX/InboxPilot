@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from core.config import settings
 from integrations.composio.composio_client import get_composio
 
 EVENTS_LIST = "GOOGLECALENDAR_EVENTS_LIST"
@@ -10,14 +11,25 @@ FIND_FREE_SLOTS = "GOOGLECALENDAR_FIND_FREE_SLOTS"
 
 
 def is_connected(user_id: str) -> bool:
-
     res = get_composio().connected_accounts.list(
-        user_ids=[user_id], 
-        toolkit_slugs=["googlecalendar"], 
-        statuses=["ACTIVE"]
+        user_ids=[user_id],
+        toolkit_slugs=["googlecalendar"],
+        statuses=["ACTIVE"],
     )
-
     return bool(getattr(res, "items", None))
+
+
+def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
+    """Start the Google Calendar OAuth grant. Returns a redirect URL to send the user to."""
+    if not settings.COMPOSIO_GCAL_AUTH_CONFIG_ID:
+        raise RuntimeError("COMPOSIO_GCAL_AUTH_CONFIG_ID is not configured")
+
+    request = get_composio().connected_accounts.link(
+        user_id=user_id,
+        auth_config_id=settings.COMPOSIO_GCAL_AUTH_CONFIG_ID,
+        callback_url=callback_url or f"{settings.FRONTEND_BASE_URL}/onboarding/connect",
+    )
+    return request.redirect_url
 
 
 def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[dict]:

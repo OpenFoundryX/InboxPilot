@@ -16,7 +16,7 @@ T = TypeVar("T")
 # FastAPI engine: long-lived, pooled (the app runs a single event loop).
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=settings.SQL_ECHO,
     pool_pre_ping=True,
 )
 

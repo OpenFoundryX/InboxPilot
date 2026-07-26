@@ -7,15 +7,25 @@ from fastapi.responses import FileResponse
 from api.router import api_router
 from core.config import settings
 from core.exceptions import register_exception_handlers
-from core.logging import configure_logging
+from core.logging import configure_logging, get_logger
+from integrations.composio.triggers import ensure_webhook_subscription
 
 WEB_DIR = Path(__file__).parent / "web"
+
+log = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     configure_logging()
+    # Point Composio's project webhook at this deployment. Cheap, idempotent,
+    # and necessary on every boot because PUBLIC_BASE_URL is a rotating tunnel
+    # in development. Never fatal: mail delivery is not worth a failed boot.
+    try:
+        ensure_webhook_subscription()
+    except Exception:
+        log.exception("composio.webhook_subscribe_failed")
     yield
     # Shutdown
     from core.database import engine

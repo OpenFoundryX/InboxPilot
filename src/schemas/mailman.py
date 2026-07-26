@@ -58,17 +58,6 @@ class VipUpdate(BaseModel):
     keywords: list[str] | None = None
 
 
-class HeldEmailRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    gmail_message_id: str
-    sender: str | None = None
-    subject: str | None = None
-    received_at: datetime | None = None
-    released_at: datetime | None = None
-    is_vip: bool
-
-
 class MailmanStatus(BaseModel):
     is_active: bool
     held_count: int

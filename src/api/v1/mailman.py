@@ -43,7 +43,7 @@ async def _apply_hold_filter(settings: MailmanSettings, vip: VipRule) -> None:
     """Sync the live Gmail hold filter to current VIP rules; persist the new id."""
     settings.gmail_filter_id = await run_in_threadpool(
         filters.apply_hold_filter,
-        settings.user_id,
+        str(settings.user_id),
         domains=vip.domains,
         addresses=vip.addresses,
         keywords=vip.keywords,

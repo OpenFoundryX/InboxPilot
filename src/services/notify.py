@@ -7,6 +7,7 @@ own mail. We also label it inboxos-chat so the command sweep never treats our ow
 outgoing mail as a new command.
 """
 
+from core.idempotency import remember_ours
 from core.logging import get_logger
 from integrations.composio import gmail
 from services.mailman import gmail_ops
@@ -33,6 +34,9 @@ def send_to_inbox(user_id: str, to: str, subject: str, body: str) -> str | None:
     """
     mid = gmail.send_email(user_id, to, subject, body, from_email=inboxos_alias(to))
     if mid:
+        # Register before anything else: this message matches the Gmail trigger,
+        # and without the marker it comes back to us as a brand-new command.
+        remember_ours(mid)
         try:
             gmail_ops.deliver_to_inbox(user_id, [mid], also_label=CHAT_LABEL)
         except Exception:

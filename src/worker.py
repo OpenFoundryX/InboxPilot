@@ -17,11 +17,10 @@ from models import users as _users_models  # noqa: F401,E402
 
 TASK_MODULES = [
     "workers.jobs.classify_new_email",
+    "workers.jobs.handle_command_email",
     "workers.jobs.reply_draft_job",
     "workers.jobs.sync_last_7_days",
     "workers.jobs.mailman_tick",
-    "workers.jobs.classify_sweep",
-    "workers.jobs.commands_sweep",
     "workers.jobs.routines_sweep",
     "workers.jobs.reminders_sweep",
     "agents.tasks",

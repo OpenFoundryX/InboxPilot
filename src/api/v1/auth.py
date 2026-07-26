@@ -72,9 +72,7 @@ async def google_login() -> RedirectResponse:
 
 
 @router.get("/google/callback")
-async def google_callback(
-    request: Request, db: DbSession, code: str, state: str
-) -> RedirectResponse:
+async def google_callback(request: Request, db: DbSession, code: str, state: str) -> RedirectResponse:
     """Handle Google's redirect: verify state, exchange code, log the user in."""
     cookie_state = request.cookies.get(STATE_COOKIE)
     verifier = request.cookies.get(VERIFIER_COOKIE)

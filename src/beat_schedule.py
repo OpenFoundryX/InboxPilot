@@ -12,16 +12,9 @@ beat_schedule: dict = {
         "task": "mailman.tick",
         "schedule": 60.0,
     },
-    # Auto-label recently-arrived mail into the org labels.
-    "classify-sweep": {
-        "task": "classify.sweep",
-        "schedule": 60.0,
-    },
-    # Execute commands the user emails to themselves.
-    "commands-sweep": {
-        "task": "commands.sweep",
-        "schedule": 60.0,
-    },
+    # Mail no longer appears here. Labeling and self-emailed commands are driven
+    # by the Composio Gmail trigger (see api.v1.webhooks); the only remaining
+    # non-webhook mail path is the onboarding backfill in jobs.sync_last_7_days.
     # Run due user routines (briefings, digests, nudges).
     "routines-sweep": {
         "task": "routines.sweep",
