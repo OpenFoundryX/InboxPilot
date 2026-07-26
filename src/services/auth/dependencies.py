@@ -9,10 +9,12 @@ from models.users import User
 
 
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else None
+
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
 

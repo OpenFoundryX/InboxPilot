@@ -35,8 +35,14 @@ from services.mailman.store import get_or_create_settings, get_or_create_vip
 
 router = APIRouter(prefix="/mailman", tags=["mailman"])
 
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
-_MODES = {MODE_INTERVAL, MODE_TIMES, MODE_CUSTOM_DAILY}
+
+_MODES = {
+    MODE_INTERVAL, 
+    MODE_TIMES, 
+    MODE_CUSTOM_DAILY
+}
 
 
 async def _apply_hold_filter(settings: MailmanSettings, vip: VipRule) -> None:
@@ -79,17 +85,22 @@ async def update_vip(payload: VipUpdate, user: CurrentUser, db: DbSession):
     vip = await get_or_create_vip(db, user.id)
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(vip, key, value)
-    # Keep the live filter in sync so VIP changes take effect immediately.
+
     settings = await get_or_create_settings(db, user.id)
     if settings.is_active:
         await _apply_hold_filter(settings, vip)
+
     return vip
 
 
 @router.get("/held", response_model=list[EmailSummary])
 async def list_held(user: CurrentUser) -> list[EmailSummary]:
+
     return await run_in_threadpool(
-        gmail.fetch_by_query, str(user.id), f"label:{gmail_ops.HOLD_LABEL_NAME}", 50
+        gmail.fetch_by_query, 
+        str(user.id), 
+        f"label:{gmail_ops.HOLD_LABEL_NAME}", 
+        50
     )
 
 
@@ -97,12 +108,17 @@ async def list_held(user: CurrentUser) -> list[EmailSummary]:
 async def status(user: CurrentUser, db: DbSession) -> MailmanStatus:
     settings = await get_or_create_settings(db, user.id)
     held = await run_in_threadpool(gmail_ops.held_message_ids, str(user.id))
-    return MailmanStatus(is_active=settings.is_active, held_count=len(held))
+
+    return MailmanStatus(
+        is_active=settings.is_active, 
+        held_count=len(held)
+    )
 
 
 @router.post("/start", response_model=SettingsRead)
 async def start(user: CurrentUser, db: DbSession) -> MailmanSettings:
     """Activate batching: install the skip-inbox Gmail filter."""
+
     settings = await get_or_create_settings(db, user.id)
     vip = await get_or_create_vip(db, user.id)
     await _apply_hold_filter(settings, vip)
@@ -118,9 +134,13 @@ async def stop(user: CurrentUser, db: DbSession) -> MailmanSettings:
     `inboxos-later` label until the next delivery slot (or a manual release).
     """
     settings = await get_or_create_settings(db, user.id)
+
     await run_in_threadpool(
-        filters.remove_hold_filter, str(user.id), settings.gmail_filter_id
+        filters.remove_hold_filter, 
+        str(user.id), 
+        settings.gmail_filter_id
     )
+
     settings.gmail_filter_id = None
     settings.is_active = False
     return settings

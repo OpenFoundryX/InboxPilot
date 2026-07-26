@@ -54,15 +54,14 @@ def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[di
 
 
 def _event_bounds(ev: dict) -> tuple[datetime, datetime] | None:
-    start = (ev.get("start") or {}).get("dateTime")
-    end = (ev.get("end") or {}).get("dateTime")
+
+    start = ev.get("start").get("dateTime")
+    end = ev.get("end").get("dateTime")
+
     if not start or not end:
         return None  # all-day events have no dateTime; ignore for overlap
     try:
-        return (
-            datetime.fromisoformat(start.replace("Z", "+00:00")),
-            datetime.fromisoformat(end.replace("Z", "+00:00")),
-        )
+        return (datetime.fromisoformat(start.replace("Z", "+00:00")), datetime.fromisoformat(end.replace("Z", "+00:00")))
     except ValueError:
         return None
 

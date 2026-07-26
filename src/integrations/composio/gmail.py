@@ -211,24 +211,28 @@ def ensure_labels(user_id: str) -> list[str]:
 
     Blocking Composio calls — invoke from a Celery task or a threadpool.
     """
-    client = get_composio()
 
+    client = get_composio()
     resp = client.tools.execute(LIST_LABELS, {}, user_id=user_id)
+
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {LIST_LABELS} failed: {resp.get('error')}")
 
     existing = {
-        (label.get("name") or "").casefold()
-        for label in (resp.get("data") or {}).get("labels") or []
+        label.get("name").casefold() for label in resp.get("data").get("labels")
     }
 
     created: list[str] = []
     for name, colors in INBOXPILOT_LABELS.items():
         if name.casefold() in existing:
             continue
+    
         res = client.tools.execute(
-            CREATE_LABEL, {"label_name": name, **colors}, user_id=user_id
+            CREATE_LABEL, 
+            {"label_name": name, **colors}, 
+            user_id=user_id
         )
+    
         if res.get("successful") is False:
             raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {res.get('error')}")
         created.append(name)
@@ -280,8 +284,10 @@ def fetch_by_query(
                 )
                 continue
             raise
+    
         if resp.get("successful") is False:
             raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
+
         data = resp.get("data") or {}
         batch = data.get("messages") or []
         out.extend(_summarize(m) for m in batch)
@@ -290,12 +296,8 @@ def fetch_by_query(
             break
 
     if max_results is None and token:
-        log.warning(
-            "gmail.fetch_all_capped",
-            user_id=user_id,
-            fetched=len(out),
-            cap=FETCH_ALL_CAP,
-        )
+        log.warning("gmail.fetch_all_capped", user_id=user_id, fetched=len(out), cap=FETCH_ALL_CAP)
+
     return out[:limit]
 
 
@@ -314,17 +316,17 @@ def fetch_recent_emails(
 
 def _summarize(m: dict) -> EmailSummary:
     """Map a Gmail message (Composio shape) to an EmailSummary."""
+
     preview = m.get("preview")
-    snippet = preview.get("body") if isinstance(preview, dict) else preview
+    snippet = preview.get("body")
+
     if not snippet:
         snippet = m.get("messageText")
-    if isinstance(snippet, str):
-        snippet = snippet.strip()[:200]
+
     attachments = [
-        a.get("filename")
-        for a in (m.get("attachmentList") or [])
-        if isinstance(a, dict) and a.get("filename")
+        a.get("filename") for a in (m.get("attachmentList")) if a.get("filename")
     ]
+
     return EmailSummary(
         id=m.get("messageId"),
         thread_id=m.get("threadId"),

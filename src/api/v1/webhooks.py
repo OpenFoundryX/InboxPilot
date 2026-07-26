@@ -32,19 +32,19 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         log.warning("composio.webhook_reject", error=str(exc))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook") from exc
 
-    event = result.get("payload") or {}
+    event = result.get("payload")
     if event.get("trigger_slug") != composio_triggers.GMAIL_NEW_MESSAGE:
         return {"status": "ignored"}
 
     user_id = event.get("user_id")
-    data = event.get("payload") or {}
+    data = event.get("payload")
     message_id = data.get("id")
+
     if not user_id or not message_id:
         return {"status": "ignored"}
 
-    label_ids = list(data.get("label_ids") or [])
+    label_ids = list(data.get("label_ids"))
     is_command = SENT_LABEL in label_ids
-
 
     try:
         if await is_ours(message_id):
@@ -52,6 +52,7 @@ async def composio_webhook(request: Request) -> dict[str, str]:
             return {"status": "skipped_own"}
         if not await claim_event(user_id, message_id):
             return {"status": "duplicate"}
+
     except Exception:
         log.exception("composio.webhook_guards_unavailable", user_id=user_id, message_id=message_id)
         if is_command:
@@ -76,13 +77,16 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         subject=data.get("subject"),
         snippet=_snippet(data),
     )
+
     log.info("composio.webhook_classify", user_id=user_id, message_id=message_id)
+
     return {"status": "queued"}
 
 
 def _snippet(data: dict) -> str | None:
     """Short preview for the classifier — never the whole body."""
+
     preview = data.get("preview")
-    text = preview.get("body") if isinstance(preview, dict) else None
+    text = preview.get("body")
     text = text or data.get("message_text")
-    return text.strip()[:SNIPPET_CHARS] if isinstance(text, str) else None
+    return text.strip()[:SNIPPET_CHARS]

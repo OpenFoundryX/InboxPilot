@@ -27,7 +27,7 @@ def build_authorization_url(state: str, code_challenge: str) -> str:
 
 
 async def exchange_code_for_profile(code: str, code_verifier: str) -> dict:
-    """Exchange the auth code, verify the ID token, return the verified profile."""
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             GOOGLE_TOKEN_URL,
@@ -43,8 +43,7 @@ async def exchange_code_for_profile(code: str, code_verifier: str) -> dict:
         resp.raise_for_status()
         raw_id_token = resp.json()["id_token"]
 
-    # verify_oauth2_token does blocking network I/O (fetches Google's certs), so
-    # run it off the event loop. It checks signature, audience, issuer, expiry.
+
     info = await asyncio.to_thread(
         google_id_token.verify_oauth2_token,
         raw_id_token,

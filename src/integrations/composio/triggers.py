@@ -56,9 +56,6 @@ def _matching_gmail_trigger(user_id: str) -> str | None:
             return getattr(item, "id", None)
         stale.append(getattr(item, "id", None))
     if stale:
-        # An INBOX-only trigger cannot see held mail, so we still create a
-        # correct one. Both will fire until the stale instance is removed;
-        # duplicate events are absorbed by the webhook's dedupe guard.
         log.warning("composio.gmail_trigger_stale", user_id=user_id, trigger_ids=stale)
     return None
 
@@ -84,8 +81,7 @@ def ensure_gmail_new_message_trigger(user_id: str, connected_account_id: str | N
             "userId": "me",
         },
     )
-    # The SDK returns a TriggerInstanceUpsertResponse model — not a mapping —
-    # and its id field is `trigger_id`.
+
     trigger_id = trigger.trigger_id
     log.info(
         "composio.gmail_trigger_ready",
