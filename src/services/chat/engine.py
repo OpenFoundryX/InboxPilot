@@ -12,6 +12,7 @@ context and streams a grounded answer.
 
 from collections.abc import AsyncIterator
 
+from fastapi.concurrency import run_in_threadpool
 from openai import AsyncOpenAI
 
 from core.config import settings
@@ -31,6 +32,13 @@ EV_ACTIONS = "actions"
 # How many prior turns are replayed to the answering model.
 HISTORY_TURNS = 6
 
+# Defence-in-depth cap on excerpt body length when rendering the corpus. The
+# `Retriever` protocol (Task 4) makes no promise that sources truncate their
+# text — today's `EmailRetriever` happens to cap at 800 chars already, but a
+# future meeting-notes or Notion retriever could return a full document. This
+# bound keeps a runaway source from ballooning the answer prompt.
+_EXCERPT_TEXT_CAP = 800
+
 NOT_CONNECTED_MESSAGE = (
     "I can't read your mail yet — your Gmail account isn't connected. "
     "Connect it on the [setup page](/onboarding/connect) and ask me again."
@@ -48,17 +56,22 @@ def _client() -> AsyncOpenAI:
 
 
 def _excerpts_as_corpus(excerpts: list[Excerpt]) -> str:
-    """Render excerpts the same way the email flow renders its hits.
+    """Render source-agnostic `Excerpt`s into the prompt corpus.
 
-    Email excerpts already carry the fields `build_corpus` wants, so reuse it
-    and keep one corpus format across both surfaces.
+    Deliberately mirrors `services.commands.ask.build_corpus`'s layout —
+    same field order, same "N file(s)"/"none" attachment phrasing, same
+    "---"-joined blocks — so the model sees one consistent corpus shape
+    across the email and chat surfaces. It is a separate function, not a
+    call to `build_corpus`, because that helper is typed to `EmailSummary`
+    while this seam must stay source-agnostic per the `Retriever` protocol.
     """
     blocks = []
     for ex in excerpts:
         atts = f"{ex.attachment_count} file(s)" if ex.attachment_count else "none"
+        text = (ex.text or "")[:_EXCERPT_TEXT_CAP]
         blocks.append(
             f"From: {ex.sender}\nDate: {ex.date}\nSubject: {ex.title}\n"
-            f"Attachments: {atts}\nLink: {ex.link}\n{ex.text}"
+            f"Attachments: {atts}\nLink: {ex.link}\n{text}"
         )
     return "\n\n---\n\n".join(blocks)
 
@@ -108,8 +121,6 @@ async def turn_events(
 ) -> AsyncIterator[tuple[str, dict]]:
     """Drive one turn, yielding (event_name, payload) pairs."""
     yield EV_STAGE, {"label": "Reading your question"}
-
-    from fastapi.concurrency import run_in_threadpool
 
     # `parse_command` reads a subject line too; chat has none.
     parsed = await run_in_threadpool(parse_command, None, message, timezone)
