@@ -114,19 +114,25 @@ async def _ask_stream(
         await store.add_message(db, conv, ROLE_USER, payload.message)
         await db.commit()
 
-        settings_row = await get_or_create_settings(db, user_id)
-        gmail_connected = await run_in_threadpool(gmail.is_connected, str(user_id))
-
         content: list[str] = []
         sources: list[dict] = []
         raw_actions: list[dict] = []
+        # Safe defaults so the except-path below never references an unbound
+        # name if either setup call raises. An unknown connection state
+        # degrades to "not connected" rather than risking a live retrieval.
+        timezone = "UTC"
+        gmail_connected = False
 
         try:
+            settings_row = await get_or_create_settings(db, user_id)
+            timezone = settings_row.timezone
+            gmail_connected = await run_in_threadpool(gmail.is_connected, str(user_id))
+
             events = engine.turn_events(
                 user_id=str(user_id),
                 message=payload.message,
                 history=history,
-                timezone=settings_row.timezone,
+                timezone=timezone,
                 retriever=EmailRetriever(account_email=account_email),
                 gmail_connected=gmail_connected,
             )
