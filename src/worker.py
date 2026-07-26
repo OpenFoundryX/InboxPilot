@@ -13,6 +13,7 @@ from workers.celery_app import celery_app
 # worker tasks.
 from models import auth as _auth_models  # noqa: F401,E402
 from models import mailman as _mailman_models  # noqa: F401,E402
+from models import meetings as _meetings_models  # noqa: F401,E402
 from models import users as _users_models  # noqa: F401,E402
 
 TASK_MODULES = [
@@ -23,6 +24,8 @@ TASK_MODULES = [
     "workers.jobs.mailman_tick",
     "workers.jobs.routines_sweep",
     "workers.jobs.reminders_sweep",
+    "workers.jobs.meetings_sweep",
+    "workers.jobs.process_meeting",
     "agents.tasks",
 ]
 
