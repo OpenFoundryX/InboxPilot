@@ -9,9 +9,12 @@ def test_create_label():
 
 
 def test_add_vip_lists_every_kind():
-    d = describe_action(
-        {"type": "add_vip", "domains": ["stripe.com"], "addresses": ["a@b.com"], "keywords": ["OTP"]}
-    )
+    d = describe_action({
+        "type": "add_vip",
+        "domains": ["stripe.com"],
+        "addresses": ["a@b.com"],
+        "keywords": ["OTP"],
+    })
     assert d["label"] == "Add to your VIP list"
     assert "stripe.com" in d["detail"]
     assert "a@b.com" in d["detail"]
@@ -40,6 +43,49 @@ def test_unknown_type_still_renders():
     d = describe_action({"type": "teleport"})
     assert d["type"] == "teleport"
     assert d["label"] == "teleport"
+
+
+def test_manage_routine_uses_human_names():
+    d = describe_action({
+        "type": "manage_routine",
+        "routine": "chase_threads",
+        "enabled": True,
+    })
+    assert d["label"] == "Turn on nudges for threads awaiting a reply"
+    assert "_" not in d["label"]
+
+
+def test_manage_routine_unknown_slug_renders():
+    d = describe_action({
+        "type": "manage_routine",
+        "routine": "unknown_routine",
+        "enabled": True,
+    })
+    assert d["type"] == "manage_routine"
+    assert d["label"] == "Turn on unknown_routine"
+
+
+def test_set_routine_with_custom_times():
+    d = describe_action({
+        "type": "set_routine",
+        "delivery_mode": "custom_daily",
+        "custom_times": ["13:00", "18:00"],
+    })
+    assert "Delivers at 13:00 and 18:00" in d["detail"]
+    assert "[" not in d["detail"]
+    assert "'" not in d["detail"]
+
+
+def test_set_routine_with_dnd_enabled():
+    d = describe_action({
+        "type": "set_routine",
+        "dnd_enabled": True,
+        "dnd_start": "22:00",
+        "dnd_end": "07:00",
+    })
+    assert "Quiet hours 22:00–07:00" in d["detail"]
+    assert "True" not in d["detail"]
+    assert "False" not in d["detail"]
 
 
 def test_describe_actions_maps_all():
