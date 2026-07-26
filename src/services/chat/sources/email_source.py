@@ -30,7 +30,10 @@ class EmailRetriever:
     async def retrieve(
         self, user_id: str, question: str, history: list[dict]
     ) -> list[Excerpt]:
-        body = f"{history_preamble(history)}{question}"
+        # Question first: `ask.plan_queries` head-slices its input to 1500
+        # chars, and the preamble alone can run to several hundred — putting
+        # the live question last risked slicing it off entirely.
+        body = f"Current question: {question}\n\n{history_preamble(history)}"
         queries = await run_in_threadpool(ask.plan_queries, None, body)
         if not queries:
             log.info("chat.no_queries_planned", user_id=user_id)

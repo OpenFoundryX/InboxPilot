@@ -10,7 +10,11 @@ from dataclasses import asdict, dataclass
 from typing import Protocol, runtime_checkable
 
 # How many prior turns of context a retriever folds into its query planning.
-HISTORY_TURNS = 4
+# Kept small, and each turn capped tight, so the preamble can never crowd the
+# live question out of `ask.plan_queries`' 1500-char head-slice — see
+# `email_source.EmailRetriever.retrieve`, which puts the question first.
+HISTORY_TURNS = 3
+HISTORY_TURN_CHARS = 200
 
 
 @dataclass
@@ -49,5 +53,5 @@ def history_preamble(history: list[dict]) -> str:
     turns = [h for h in history if h.get("content")][-HISTORY_TURNS:]
     if not turns:
         return ""
-    lines = [f"{h['role']}: {h['content'][:400]}" for h in turns]
+    lines = [f"{h['role']}: {h['content'][:HISTORY_TURN_CHARS]}" for h in turns]
     return "Earlier in this conversation:\n" + "\n".join(lines) + "\n\n"
