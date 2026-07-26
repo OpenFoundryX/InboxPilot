@@ -13,6 +13,7 @@ from models.base import Base
 # Add new model modules here as they are created.
 from models import auth as auth_models  # noqa: F401
 from models import mailman as mailman_models  # noqa: F401
+from models import meetings as meetings_models  # noqa: F401
 from models import reminders as reminders_models  # noqa: F401
 from models import routines as routines_models  # noqa: F401
 from models import users as users_models  # noqa: F401

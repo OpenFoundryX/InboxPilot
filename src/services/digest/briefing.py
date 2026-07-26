@@ -30,8 +30,15 @@ def _line(e) -> str:
     return f"  • {subj}" + (f" — {who}" if who else "")
 
 
-def compose_briefing(user_id: str, tz: str, window: str = "newer_than:1d") -> tuple[str, str]:
-    """Return (subject, body) for a briefing over `window` of received mail."""
+def compose_briefing(
+    user_id: str, tz: str, window: str = "newer_than:1d", extra: str = ""
+) -> tuple[str, str]:
+    """Return (subject, body) for a briefing over `window` of received mail.
+
+    `extra` is appended before the signature, for sections composed elsewhere
+    (meeting recaps need a DB session, which a mail-only digest shouldn't pay
+    for). A briefing with no mail but a non-empty `extra` is still worth sending.
+    """
     try:
         now_local = datetime.now(ZoneInfo(tz))
     except Exception:
@@ -63,14 +70,21 @@ def compose_briefing(user_id: str, tz: str, window: str = "newer_than:1d") -> tu
     date_str = now_local.strftime("%A, %d %b")
     subject = f"☀️ Briefing — {date_str}"
 
-    if total == 0:
+    if total == 0 and not extra.strip():
         body = f"{greeting}! Nothing new to brief you on for {date_str}. Enjoy the calm.\n\n— InboxOS"
         return subject, body
 
-    parts = [f"{greeting}! Here's what landed since yesterday ({date_str}):", ""]
+    if total == 0:
+        intro = f"{greeting}! No new mail since yesterday ({date_str}), but:"
+    else:
+        intro = f"{greeting}! Here's what landed since yesterday ({date_str}):"
+
+    parts = [intro, ""]
     for section in sections:
         parts += [section, ""]
     if counts:
         parts += ["Filtered out:", *counts, ""]
+    if extra.strip():
+        parts += [extra.strip(), ""]
     parts.append("— InboxOS")
     return subject, "\n".join(parts)

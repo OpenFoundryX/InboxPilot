@@ -25,6 +25,13 @@ beat_schedule: dict = {
         "task": "reminders.sweep",
         "schedule": 60.0,
     },
+    # Book notetaker bots for meetings about to start, and recall bots whose
+    # meeting was deleted. Every minute: the provider wants join_at in advance,
+    # so a late sweep means a late bot.
+    "meetings-sweep": {
+        "task": "meetings.sweep",
+        "schedule": 60.0,
+    },
 }
 
 __all__ = ["beat_schedule", "crontab"]

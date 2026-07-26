@@ -15,6 +15,7 @@ from models.base import Base, TimestampMixin, UUIDMixin
 
 ORIGIN_MANUAL = "manual"  # user asked for it
 ORIGIN_DEADLINE = "deadline"  # auto-extracted from a message
+ORIGIN_MEETING = "meeting"  # a commitment the notetaker heard in a meeting
 
 
 class Reminder(UUIDMixin, TimestampMixin, Base):
