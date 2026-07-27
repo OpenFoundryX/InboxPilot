@@ -19,6 +19,13 @@
 - **Layering:** `models/` may not import from `services/`. `integrations/` may not import from `services/`. This is why `BUILTIN_CATEGORIES` lives in `models/categorization.py` — both `services/categorization/store.py` and `integrations/composio/gmail.py` need it.
 - **Composio `user_id` is `str(User.id)`.** The app user's UUID, passed as a string to every Composio call.
 - **Gmail label names are immutable.** There is no rename action in Composio. `EmailCategory.key` and `EmailCategory.gmail_label` are set once at creation and never updated; only `display_name` changes.
+- **No writes to the real Gmail account, and no OpenAI spend.** The dev stack is live and backed by a real connected mailbox. You may read from the DB and call the API, but you may NOT run any path that reaches `gmail.create_label`, `gmail_ops._modify`, or the classifier against real data — that means no happy-path `POST /categories`, and never calling `POST /reclassify`. Prove those paths with `unittest.mock.patch` instead, as Task 10's verification step already does.
+- **Getting a token for API smoke checks** (no browser needed):
+  ```bash
+  TOKEN=$(docker compose exec -T api python -c "from core.security import create_access_token; print(create_access_token('e397bee9-17ed-40d1-a3a0-0b55e115dc90'))" | tr -d '\r')
+  ```
+  That user id is the only row in the dev `users` table. Verify with `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" http://localhost:8000/v1/auth/me` → `200`.
+- **The dev stack is already running** (`docker compose ps`: api, worker, beat, db, redis, rabbitmq, up for hours). Do not `make up` or `make down`. `make migrate` is fine.
 - **Branch:** work on `feat/categorization-api`, already created and holding the spec commit.
 - **Commit style:** Conventional Commits (`feat:`, `refactor:`, `docs:`). Match the existing log.
 
@@ -1274,16 +1281,18 @@ git add src/services/categorization/ src/workers/jobs/ src/api/v1/categorization
 git commit -m "feat: on-demand reclassify job and endpoint"
 ```
 
-- [ ] **Step 9: End-to-end smoke check of Phase 1**
+- [ ] **Step 9: Smoke check of Phase 1 (no Gmail writes)**
 
-Bring the stack up (`make up`, `make migrate` in another shell if not already applied), get a bearer token the way you normally would for this app, then:
+The stack is already running. Mint a token per the Global Constraints, then:
 
 ```bash
-TOKEN=<your token>
+TOKEN=$(docker compose exec -T api python -c "from core.security import create_access_token; print(create_access_token('e397bee9-17ed-40d1-a3a0-0b55e115dc90'))" | tr -d '\r')
 BASE=http://localhost:8000/v1/categorization
 
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/categories | python -m json.tool
 ```
+
+**Do not call `POST /reclassify` with categorization enabled** — it would enqueue real LLM classification over a real inbox. Its disabled-path `409` is checked below; the happy path is verified by the registration assertions in Step 7.
 Expected: six categories, `to_do` first, all `is_builtin: true`, `is_enabled: true`, `actions` all false.
 
 ```bash
@@ -1299,6 +1308,18 @@ curl -s -i -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: applicat
   -d '{"is_enabled":false}' $BASE/categories/nope | head -1
 ```
 Expected: `HTTP/1.1 404 Not Found` (and `to_do` restored).
+
+Then check the reclassify guard, which reaches no external service:
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"is_enabled":false}' $BASE/settings > /dev/null
+curl -s -i -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"days":7}' $BASE/reclassify | head -1
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"is_enabled":true}' $BASE/settings > /dev/null
+```
+Expected: `HTTP/1.1 409 Conflict`, with categorization left enabled afterwards.
 
 ---
 
@@ -2266,34 +2287,105 @@ git add src/services/mailman/gmail_ops.py src/services/categorization/pipeline.p
 git commit -m "feat: per-category gmail actions"
 ```
 
-- [ ] **Step 5: Full-surface smoke check**
+- [ ] **Step 5: Full-surface smoke check, in-process with Composio stubbed**
 
-Bring the stack up and confirm the surface answers. With `$TOKEN` and `$BASE` as in Task 5:
+Creating a custom category calls Gmail for real, which the Global Constraints forbid. Exercise the whole surface in-process instead: the real routes, real validation, and the real dev database, with only `gmail.create_label` stubbed. `./src` is bind-mounted into the api container, so it already sees your code.
 
-```bash
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"display_name":"Client work","description":"Anything from a paying client.","actions":{"star":true}}' \
-  $BASE/categories | python -m json.tool
+Write this to `/tmp/smoke.py` and run it with `docker compose exec -T api python /tmp/smoke.py` (copy it in with `docker compose cp` or a heredoc):
+
+```python
+"""Full-surface smoke check. Real routes + real DB; Composio stubbed."""
+
+import asyncio
+from unittest.mock import patch
+
+import httpx
+
+from core.security import create_access_token
+from integrations.composio import gmail
+from main import app
+
+USER_ID = "e397bee9-17ed-40d1-a3a0-0b55e115dc90"
+BASE = "/v1/categorization"
+AUTH = {"Authorization": f"Bearer {create_access_token(USER_ID)}"}
+
+
+async def main() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        # Clean slate for the custom category this script creates.
+        await c.delete(f"{BASE}/categories/client_work", headers=AUTH)
+
+        r = await c.post(
+            f"{BASE}/categories",
+            headers=AUTH,
+            json={
+                "display_name": "Client work",
+                "description": "Anything from a paying client.",
+                "actions": {"star": True},
+            },
+        )
+        assert r.status_code == 201, (r.status_code, r.text)
+        body = r.json()
+        assert body["key"] == "client_work", body
+        assert body["gmail_label"] == "client work", body
+        assert body["is_builtin"] is False, body
+        assert body["actions"]["star"] is True, body
+        print("create custom category: ok")
+
+        r = await c.post(
+            f"{BASE}/categories",
+            headers=AUTH,
+            json={"display_name": "FYI", "description": "dupe"},
+        )
+        assert r.status_code == 422, (r.status_code, r.text)
+        print("duplicate key rejected: ok")
+
+        r = await c.post(
+            f"{BASE}/rules",
+            headers=AUTH,
+            json={
+                "match_type": "sender_domain",
+                "match_value": "@acme.com",
+                "action": "assign",
+                "category_key": "client_work",
+            },
+        )
+        assert r.status_code == 201, (r.status_code, r.text)
+        rule_id = r.json()["id"]
+        print("create rule: ok")
+
+        r = await c.post(
+            f"{BASE}/rules",
+            headers=AUTH,
+            json={
+                "match_type": "sender_domain",
+                "match_value": "@acme.com",
+                "action": "assign",
+                "category_key": "ghost",
+            },
+        )
+        assert r.status_code == 422, (r.status_code, r.text)
+        print("rule against unknown category rejected: ok")
+
+        r = await c.delete(f"{BASE}/categories/to_do", headers=AUTH)
+        assert r.status_code == 409, (r.status_code, r.text)
+        print("builtin delete refused: ok")
+
+        r = await c.delete(f"{BASE}/categories/client_work", headers=AUTH)
+        assert r.status_code == 204, (r.status_code, r.text)
+
+        r = await c.get(f"{BASE}/rules", headers=AUTH)
+        assert all(x["id"] != rule_id for x in r.json()), r.json()
+        print("category delete cascaded to its rule: ok")
+
+
+with patch.object(gmail, "create_label", return_value="Label_stub"):
+    asyncio.run(main())
+print("\nfull surface ok")
 ```
-Expected: `201`, `key` is `client_work`, `gmail_label` is `client work`, `is_builtin` is `false`, `actions.star` is `true`. Check the label now exists in Gmail.
 
-```bash
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"match_type":"sender_domain","match_value":"@acme.com","action":"assign","category_key":"client_work"}' \
-  $BASE/rules | python -m json.tool
-
-curl -s -i -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"match_type":"sender_domain","match_value":"@acme.com","action":"assign","category_key":"ghost"}' \
-  $BASE/rules | head -1
-```
-Expected: first returns `201` with `priority: 0`; second returns `422`.
-
-```bash
-curl -s -i -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/categories/to_do | head -1
-curl -s -i -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/categories/client_work | head -1
-curl -s -H "Authorization: Bearer $TOKEN" $BASE/rules | python -m json.tool
-```
-Expected: `409` for the built-in, `204` for the custom one, and the rules list is now **empty** — deleting the category took its dependent rule with it.
+Expected: every line prints `ok`, ending with `full surface ok`. If `create_label` is invoked for real, the patch failed — stop and fix the patch target rather than letting it through.
 
 ---
 
