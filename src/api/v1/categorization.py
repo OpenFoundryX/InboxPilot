@@ -5,16 +5,24 @@ categories; the Advanced tab adds custom categories, deterministic rules, and
 tuning knobs.
 """
 
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
 from integrations.composio import gmail
-from models.categorization import CategorizationSettings, EmailCategory, default_actions
+from models.categorization import (
+    RULE_ASSIGN,
+    CategorizationRule,
+    CategorizationSettings,
+    EmailCategory,
+    default_actions,
+)
 from models.users import User
 from schemas.categorization import (
     CategoryCreate,
@@ -22,6 +30,10 @@ from schemas.categorization import (
     CategoryUpdate,
     ReclassifyRequest,
     ReclassifyResponse,
+    RuleCreate,
+    RuleRead,
+    RuleReorder,
+    RuleUpdate,
     SettingsRead,
     SettingsUpdate,
 )
@@ -31,6 +43,9 @@ from services.categorization.store import (
     get_category,
     get_or_create_categories,
     get_or_create_settings,
+    get_rule,
+    list_rules,
+    next_rule_priority,
     slugify,
 )
 from workers.jobs.reclassify import reclassify as reclassify_task
@@ -198,3 +213,88 @@ async def remove_category(key: str, user: CurrentUser, db: DbSession) -> None:
         raise HTTPException(409, "built-in categories cannot be deleted; disable it instead")
 
     await delete_category(db, user.id, category)
+
+
+async def _check_rule_target(
+    db: AsyncSession, user_id: uuid.UUID, action: str, category_key: str | None
+) -> None:
+    """An `assign` rule must name a category that exists in this user's taxonomy."""
+    if action != RULE_ASSIGN:
+        return
+    if not category_key:
+        raise HTTPException(422, "category_key is required when action is 'assign'")
+    if await get_category(db, user_id, category_key) is None:
+        raise HTTPException(422, f"no category with key {category_key!r}")
+
+
+@router.get("/rules", response_model=list[RuleRead])
+async def get_rules(user: CurrentUser, db: DbSession) -> list[CategorizationRule]:
+    """Rules in evaluation order — lowest priority first, first match wins."""
+    return await list_rules(db, user.id)
+
+
+@router.post("/rules", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
+async def create_rule(
+    payload: RuleCreate, user: CurrentUser, db: DbSession
+) -> CategorizationRule:
+    await get_or_create_categories(db, user.id)
+    await _check_rule_target(db, user.id, payload.action, payload.category_key)
+
+    rule = CategorizationRule(
+        user_id=user.id,
+        priority=await next_rule_priority(db, user.id),
+        match_type=payload.match_type,
+        match_value=payload.match_value.strip(),
+        action=payload.action,
+        category_key=payload.category_key,
+        is_enabled=payload.is_enabled,
+    )
+    db.add(rule)
+    await db.flush()
+    return rule
+
+
+@router.patch("/rules/{rule_id}", response_model=RuleRead)
+async def update_rule(
+    rule_id: uuid.UUID, payload: RuleUpdate, user: CurrentUser, db: DbSession
+) -> CategorizationRule:
+    rule = await get_rule(db, user.id, rule_id)
+    if rule is None:
+        raise HTTPException(404, f"no rule with id {rule_id}")
+
+    data = payload.model_dump(exclude_unset=True)
+    # Validate the post-update state, not the patch: changing only `action` to
+    # 'assign' must still be checked against the rule's existing category_key.
+    action = data.get("action", rule.action)
+    category_key = data.get("category_key", rule.category_key)
+    await _check_rule_target(db, user.id, action, category_key)
+
+    for field, value in data.items():
+        setattr(rule, field, value.strip() if field == "match_value" else value)
+    return rule
+
+
+@router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_rule(rule_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    rule = await get_rule(db, user.id, rule_id)
+    if rule is None:
+        raise HTTPException(404, f"no rule with id {rule_id}")
+    await db.delete(rule)
+
+
+@router.put("/rules/order", response_model=list[RuleRead])
+async def reorder_rules(
+    payload: RuleReorder, user: CurrentUser, db: DbSession
+) -> list[CategorizationRule]:
+    """Rewrite priorities to match the given order. Must list every rule exactly once."""
+    rules = await list_rules(db, user.id)
+    by_id = {rule.id: rule for rule in rules}
+
+    if len(payload.rule_ids) != len(set(payload.rule_ids)):
+        raise HTTPException(422, "rule_ids contains duplicates")
+    if set(payload.rule_ids) != set(by_id):
+        raise HTTPException(422, "rule_ids must list every one of your rules exactly once")
+
+    for position, rule_id in enumerate(payload.rule_ids):
+        by_id[rule_id].priority = position
+    return [by_id[rule_id] for rule_id in payload.rule_ids]

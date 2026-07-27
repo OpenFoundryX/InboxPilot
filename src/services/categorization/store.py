@@ -7,7 +7,7 @@ user's taxonomy seeds the six built-ins, so nothing has to happen at signup.
 import re
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.categorization import (
@@ -66,6 +66,36 @@ async def get_category(
             EmailCategory.user_id == user_id, EmailCategory.key == key
         )
     )
+
+
+async def list_rules(db: AsyncSession, user_id: uuid.UUID) -> list[CategorizationRule]:
+    return list(
+        await db.scalars(
+            select(CategorizationRule)
+            .where(CategorizationRule.user_id == user_id)
+            .order_by(CategorizationRule.priority, CategorizationRule.created_at)
+        )
+    )
+
+
+async def get_rule(
+    db: AsyncSession, user_id: uuid.UUID, rule_id: uuid.UUID
+) -> CategorizationRule | None:
+    return await db.scalar(
+        select(CategorizationRule).where(
+            CategorizationRule.user_id == user_id, CategorizationRule.id == rule_id
+        )
+    )
+
+
+async def next_rule_priority(db: AsyncSession, user_id: uuid.UUID) -> int:
+    """One past the current maximum, so new rules land at the end."""
+    highest = await db.scalar(
+        select(func.max(CategorizationRule.priority)).where(
+            CategorizationRule.user_id == user_id
+        )
+    )
+    return 0 if highest is None else highest + 1
 
 
 async def get_or_create_settings(

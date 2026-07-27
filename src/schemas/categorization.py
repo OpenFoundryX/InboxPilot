@@ -1,8 +1,11 @@
 """Pydantic schemas for the Categorization API."""
 
+import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from models.categorization import MATCH_TYPES, RULE_ACTIONS, RULE_ASSIGN
 
 HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
 
@@ -72,3 +75,67 @@ class ReclassifyResponse(BaseModel):
     task_id: str
     days: int
     max_results: int | None = None
+
+
+class RuleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    is_enabled: bool
+    priority: int
+    match_type: str
+    match_value: str
+    action: str
+    category_key: str | None = None
+
+
+class RuleCreate(BaseModel):
+    """`body_keyword` matches the message *snippet*, not the full body — the
+    Gmail trigger payload carries only a preview and we never re-fetch."""
+
+    match_type: str
+    match_value: str = Field(min_length=1, max_length=320)
+    action: str = RULE_ASSIGN
+    category_key: str | None = None
+    is_enabled: bool = True
+
+    @field_validator("match_type")
+    @classmethod
+    def _known_match_type(cls, value: str) -> str:
+        if value not in MATCH_TYPES:
+            raise ValueError(f"match_type must be one of {sorted(MATCH_TYPES)}")
+        return value
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, value: str) -> str:
+        if value not in RULE_ACTIONS:
+            raise ValueError(f"action must be one of {sorted(RULE_ACTIONS)}")
+        return value
+
+
+class RuleUpdate(BaseModel):
+    match_type: str | None = None
+    match_value: str | None = Field(default=None, min_length=1, max_length=320)
+    action: str | None = None
+    category_key: str | None = None
+    is_enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0)
+
+    @field_validator("match_type")
+    @classmethod
+    def _known_match_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in MATCH_TYPES:
+            raise ValueError(f"match_type must be one of {sorted(MATCH_TYPES)}")
+        return value
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, value: str | None) -> str | None:
+        if value is not None and value not in RULE_ACTIONS:
+            raise ValueError(f"action must be one of {sorted(RULE_ACTIONS)}")
+        return value
+
+
+class RuleReorder(BaseModel):
+    rule_ids: list[uuid.UUID] = Field(min_length=1)
