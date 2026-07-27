@@ -19,6 +19,7 @@ from composio_client import APIStatusError
 from core.config import settings
 from core.logging import get_logger
 from integrations.composio.composio_client import get_composio
+from models.categorization import BUILTIN_CATEGORIES
 from schemas.email import EmailSummary
 
 log = get_logger(__name__)
@@ -37,20 +38,32 @@ FETCH_PAGE = 25
 # Hard ceiling when fetching "all" so a huge mailbox can't run forever.
 FETCH_ALL_CAP = 2000
 
-INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
-
-    "to do": {"background_color": "#fb4c2f", "text_color": "#ffffff"},  # red
-    "notification": {"background_color": "#4a86e8", "text_color": "#ffffff"},  # blue
-    "fyi": {"background_color": "#16a766", "text_color": "#ffffff"},  # green
-    "marketing": {"background_color": "#fad165", "text_color": "#000000"},  # yellow
-    "noise": {"background_color": "#999999", "text_color": "#ffffff"},  # grey
-    "to follow up": {"background_color": "#a479e2", "text_color": "#ffffff"},  # purple
-
+# Labels InboxPilot uses internally; not part of the user's taxonomy and not
+# editable from the Categorization page.
+INTERNAL_LABELS: dict[str, dict[str, str]] = {
     "inboxos-chat": {"background_color": "#2da2bb", "text_color": "#ffffff", "label_list_visibility": "labelShowIfUnread"},  # teal
     "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
     "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
     "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
 }
+
+# The org labels every account gets provisioned, derived from the one taxonomy
+# definition so colours and names cannot drift from what the classifier uses.
+INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
+    **{
+        builtin.gmail_label: {
+            "background_color": builtin.color_bg,
+            "text_color": builtin.color_text,
+        }
+        for builtin in BUILTIN_CATEGORIES
+    },
+    **INTERNAL_LABELS,
+}
+
+# Names a user may not claim for a custom category.
+RESERVED_LABEL_NAMES: frozenset[str] = frozenset(
+    name.casefold() for name in INBOXPILOT_LABELS
+)
 
 
 def _find_label_id(user_id: str, name: str) -> str | None:
