@@ -566,7 +566,7 @@ EOF
 
 ---
 
-## Task 4: The summary endpoint — stats and setup state
+## Task 4: The summary endpoint
 
 **Files:**
 - Create: `src/services/dashboard/__init__.py`
@@ -576,16 +576,18 @@ EOF
 - Modify: `src/api/router.py`
 
 **Interfaces:**
-- Consumes: `ActivityEvent`, kind constants (Task 1); `User.initial_sync_at` (Task 1).
+- Consumes: `ActivityEvent`, kind constants, `User.initial_sync_at` (Task 1); `integrations.composio.calendar.list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[dict]`; `services.meetings.rules.event_bounds(event: dict) -> tuple[datetime, datetime] | None`; `services.meetings.links.link_from_event(event: dict) -> tuple[str, str] | None`; `services.mailman.store.get_or_create_settings(db, user_id) -> MailmanSettings`; `models.meetings` status constants.
 - Produces:
-  - `services.dashboard.summary.load_stats(db: AsyncSession, user_id: uuid.UUID) -> StatsPayload`
-  - `services.dashboard.summary.setup_state(user: User) -> str` returning `"syncing"` or `"ready"`
   - `services.dashboard.summary.first_name(user: User) -> str`
+  - `services.dashboard.summary.setup_state(user: User) -> str` returning `"syncing"` or `"ready"`
+  - `services.dashboard.summary.load_stats(db: AsyncSession, user_id: uuid.UUID) -> DashboardStats`
+  - `services.dashboard.summary.day_bounds(tz_name: str, now: datetime | None = None) -> tuple[datetime, datetime, datetime]` returning `(today_start, tomorrow_start, day_after_start)` as UTC instants
+  - `services.dashboard.summary.bot_flags(meeting: Meeting | None, starts_at: datetime, has_link: bool, now: datetime) -> tuple[bool, bool]` returning `(bot_on, bot_editable)`
+  - `services.dashboard.summary.load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> DashboardMeetings`
+  - `services.dashboard.summary.build_summary(db: AsyncSession, user: User) -> DashboardSummary`
   - `services.dashboard.summary.SETUP_SYNCING`, `SETUP_READY`
-  - Schemas `DashboardUser`, `DashboardSetup`, `DashboardStats`, `DashboardMeetings`, `DashboardSummary` in `schemas.dashboard`
+  - Schemas `DashboardUser`, `DashboardSetup`, `DashboardStats`, `AgendaItem`, `DashboardMeetings`, `DashboardSummary` in `schemas.dashboard`
   - Endpoint `GET /v1/dashboard/summary`
-
-  Task 5 replaces the empty-agenda placeholder inside this task's `build_summary`; the signatures above do not change.
 
 - [ ] **Step 1: Create the schemas**
 
@@ -658,22 +660,52 @@ router in this codebase.
 """
 
 import uuid
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.logging import get_logger
+from integrations.composio import calendar
 from models.activity import KIND_DRAFT_CREATED, KIND_EMAIL_CATEGORIZED, ActivityEvent
+from models.meetings import (
+    STATUS_CANCELLED,
+    STATUS_DELIVERED,
+    STATUS_ENDED,
+    STATUS_FAILED,
+    STATUS_PROCESSED,
+    STATUS_RECORDED,
+    STATUS_RECORDING,
+    Meeting,
+)
 from models.users import User
 from schemas.dashboard import (
+    AgendaItem,
     DashboardMeetings,
     DashboardSetup,
     DashboardStats,
     DashboardSummary,
     DashboardUser,
 )
+from services.mailman.store import get_or_create_settings
+from services.meetings.links import link_from_event
+from services.meetings.rules import event_bounds
+
+log = get_logger(__name__)
 
 SETUP_SYNCING = "syncing"
 SETUP_READY = "ready"
+
+# No bot is attending: either none was ever booked, or the booking is gone.
+BOT_OFF_STATUSES = frozenset({STATUS_CANCELLED, STATUS_FAILED})
+
+# The call has started or finished — nothing left to toggle. Mirrors the 409
+# condition in POST /v1/meetings/bot; the two must be kept in step.
+BOT_LOCKED_STATUSES = frozenset(
+    {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
+)
 
 
 def first_name(user: User) -> str:
@@ -710,14 +742,113 @@ async def load_stats(db: AsyncSession, user_id: uuid.UUID) -> DashboardStats:
     )
 
 
+def day_bounds(tz_name: str, now: datetime | None = None) -> tuple[datetime, datetime, datetime]:
+    """Local midnight today, tomorrow, and the day after — returned as UTC instants.
+
+    Built from calendar dates rather than by adding 24-hour deltas: on a DST
+    transition day the local day is 23 or 25 hours long, and `midnight + 1 day`
+    would land an hour either side of midnight rather than on it.
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        log.warning("dashboard.unknown_timezone", timezone=tz_name)
+        tz = ZoneInfo("UTC")
+
+    local_today = (now or datetime.now(timezone.utc)).astimezone(tz).date()
+    midnights = [
+        datetime.combine(local_today + timedelta(days=offset), time.min, tzinfo=tz)
+        for offset in (0, 1, 2)
+    ]
+    return tuple(m.astimezone(timezone.utc) for m in midnights)  # type: ignore[return-value]
+
+
+def bot_flags(
+    meeting: Meeting | None, starts_at: datetime, has_link: bool, now: datetime
+) -> tuple[bool, bool]:
+    """(bot_on, bot_editable) for one agenda row."""
+    bot_on = meeting is not None and meeting.status not in BOT_OFF_STATUSES
+
+    if not has_link:
+        # Part of the user's day, but there is nothing for a bot to join.
+        return False, False
+    if starts_at <= now:
+        return bot_on, False
+    if meeting is not None and meeting.status in BOT_LOCKED_STATUSES:
+        return bot_on, False
+    return bot_on, True
+
+
+async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> DashboardMeetings:
+    """The user's next two days, from the calendar, annotated with bot state.
+
+    Read from the calendar rather than the meetings table on purpose: the table
+    holds only calls the sweep chose to book, so an event the notetaker skips —
+    "deep work (no calls please)" — has no row, and an agenda built from the
+    table alone could never show it as Off.
+
+    A calendar outage empties the agenda but must not empty the page: the stats
+    card has nothing to do with Google being reachable.
+    """
+    now = datetime.now(timezone.utc)
+    today_start, tomorrow_start, day_after_start = day_bounds(tz_name, now)
+
+    try:
+        events = await run_in_threadpool(
+            calendar.list_events, str(user_id), today_start, day_after_start
+        )
+    except Exception:
+        log.exception("dashboard.calendar_unavailable", user_id=str(user_id))
+        return DashboardMeetings(timezone=tz_name, today=[], tomorrow=[])
+
+    rows = await db.scalars(select(Meeting).where(Meeting.user_id == user_id))
+    by_event = {m.calendar_event_id: m for m in rows if m.calendar_event_id}
+
+    today: list[AgendaItem] = []
+    tomorrow: list[AgendaItem] = []
+
+    for event in events:
+        event_id = event.get("id")
+        bounds = event_bounds(event)
+        # All-day entries have no dateTime and no place on a timed agenda.
+        if not event_id or not bounds:
+            continue
+        starts_at, ends_at = bounds
+
+        meeting = by_event.get(str(event_id))
+        link = link_from_event(event)
+        bot_on, bot_editable = bot_flags(meeting, starts_at, link is not None, now)
+
+        item = AgendaItem(
+            calendar_event_id=str(event_id),
+            meeting_id=meeting.id if meeting else None,
+            title=event.get("summary"),
+            starts_at=starts_at,
+            ends_at=ends_at,
+            meeting_url=link[0] if link else None,
+            bot_on=bot_on,
+            bot_editable=bot_editable,
+        )
+
+        if starts_at < tomorrow_start:
+            today.append(item)
+        elif starts_at < day_after_start:
+            tomorrow.append(item)
+
+    today.sort(key=lambda i: i.starts_at)
+    tomorrow.sort(key=lambda i: i.starts_at)
+    return DashboardMeetings(timezone=tz_name, today=today, tomorrow=tomorrow)
+
+
 async def build_summary(db: AsyncSession, user: User) -> DashboardSummary:
     stats = await load_stats(db, user.id)
+    mailman_settings = await get_or_create_settings(db, user.id)
+    meetings = await load_agenda(db, user.id, mailman_settings.timezone or "UTC")
     return DashboardSummary(
         user=DashboardUser(first_name=first_name(user)),
         setup=DashboardSetup(state=setup_state(user), initial_sync_at=user.initial_sync_at),
         stats=stats,
-        # Filled in by Task 5.
-        meetings=DashboardMeetings(timezone="UTC", today=[], tomorrow=[]),
+        meetings=meetings,
     )
 ```
 
@@ -781,11 +912,9 @@ Expected shape:
   "user": { "first_name": "Nilesh" },
   "setup": { "state": "ready", "initial_sync_at": "2026-07-26T09:12:00Z" },
   "stats": { "emails_categorized": 12, "drafts_created": 0 },
-  "meetings": { "timezone": "UTC", "today": [], "tomorrow": [] }
+  "meetings": { "timezone": "Asia/Kolkata", "today": [], "tomorrow": [] }
 }
 ```
-
-Empty `today`/`tomorrow` is correct at this point — Task 5 fills them.
 
 - [ ] **Step 7: Verify the counts are real**
 
@@ -798,219 +927,7 @@ docker compose exec postgres psql -U inboxos -d inboxos -c \
 
 Expected: matches `stats` in the JSON exactly.
 
-- [ ] **Step 8: Check lint**
-
-Run: `uv run ruff check src`
-Expected: still the 2 remaining pre-existing errors, no new ones.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add src/services/dashboard/ src/schemas/dashboard.py src/api/v1/dashboard.py src/api/router.py
-git commit -m "$(cat <<'EOF'
-feat: GET /v1/dashboard/summary with stats and setup state
-
-One aggregate endpoint rather than a client-side fan-out, so the server
-owns day boundaries and the page has one loading state. Setup state comes
-from users.initial_sync_at alone — the layout already gates on Gmail being
-connected, so re-checking would cost a Composio call per page load to
-restate a known fact.
-
-Agenda is stubbed empty here and filled in next.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Task 5: The calendar-backed agenda
-
-**Files:**
-- Modify: `src/services/dashboard/summary.py`
-
-**Interfaces:**
-- Consumes: `integrations.composio.calendar.list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[dict]`; `services.meetings.rules.event_bounds(event: dict) -> tuple[datetime, datetime] | None`; `services.meetings.links.link_from_event(event: dict) -> tuple[str, str] | None`; `services.mailman.store.get_or_create_settings(db, user_id) -> MailmanSettings`; `models.meetings` status constants.
-- Produces:
-  - `services.dashboard.summary.day_bounds(tz_name: str, now: datetime | None = None) -> tuple[datetime, datetime, datetime]` returning `(today_start, tomorrow_start, day_after_start)` as UTC instants
-  - `services.dashboard.summary.bot_flags(meeting: Meeting | None, starts_at: datetime, has_link: bool, now: datetime) -> tuple[bool, bool]` returning `(bot_on, bot_editable)`
-  - `build_summary` now returns a populated `DashboardMeetings`
-
-- [ ] **Step 1: Add the imports and status sets**
-
-At the top of `src/services/dashboard/summary.py`, add to the existing imports:
-
-```python
-from datetime import datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
-
-from fastapi.concurrency import run_in_threadpool
-
-from core.logging import get_logger
-from integrations.composio import calendar
-from models.meetings import (
-    STATUS_CANCELLED,
-    STATUS_DELIVERED,
-    STATUS_ENDED,
-    STATUS_FAILED,
-    STATUS_PROCESSED,
-    STATUS_RECORDED,
-    STATUS_RECORDING,
-    Meeting,
-)
-from schemas.dashboard import AgendaItem
-from services.mailman.store import get_or_create_settings
-from services.meetings.links import link_from_event
-from services.meetings.rules import event_bounds
-```
-
-And below the existing `SETUP_*` constants:
-
-```python
-log = get_logger(__name__)
-
-# No bot is attending: either none was ever booked, or the booking is gone.
-BOT_OFF_STATUSES = frozenset({STATUS_CANCELLED, STATUS_FAILED})
-
-# The call has started or finished — nothing left to toggle. Mirrors the 409
-# condition in POST /v1/meetings/bot; the two must be kept in step.
-BOT_LOCKED_STATUSES = frozenset(
-    {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
-)
-```
-
-- [ ] **Step 2: Write the day-bucketing helper**
-
-Add to `src/services/dashboard/summary.py`:
-
-```python
-def day_bounds(tz_name: str, now: datetime | None = None) -> tuple[datetime, datetime, datetime]:
-    """Local midnight today, tomorrow, and the day after — returned as UTC instants.
-
-    Built from calendar dates rather than by adding 24-hour deltas: on a DST
-    transition day the local day is 23 or 25 hours long, and `midnight + 1 day`
-    would land an hour either side of midnight rather than on it.
-    """
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        log.warning("dashboard.unknown_timezone", timezone=tz_name)
-        tz = ZoneInfo("UTC")
-
-    local_today = (now or datetime.now(timezone.utc)).astimezone(tz).date()
-    midnights = [
-        datetime.combine(local_today + timedelta(days=offset), time.min, tzinfo=tz)
-        for offset in (0, 1, 2)
-    ]
-    return tuple(m.astimezone(timezone.utc) for m in midnights)  # type: ignore[return-value]
-```
-
-- [ ] **Step 3: Write the bot-state helper**
-
-Add to `src/services/dashboard/summary.py`:
-
-```python
-def bot_flags(
-    meeting: Meeting | None, starts_at: datetime, has_link: bool, now: datetime
-) -> tuple[bool, bool]:
-    """(bot_on, bot_editable) for one agenda row."""
-    bot_on = meeting is not None and meeting.status not in BOT_OFF_STATUSES
-
-    if not has_link:
-        # Part of the user's day, but there is nothing for a bot to join.
-        return False, False
-    if starts_at <= now:
-        return bot_on, False
-    if meeting is not None and meeting.status in BOT_LOCKED_STATUSES:
-        return bot_on, False
-    return bot_on, True
-```
-
-- [ ] **Step 4: Write the agenda loader**
-
-Add to `src/services/dashboard/summary.py`:
-
-```python
-async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> DashboardMeetings:
-    """The user's next two days, from the calendar, annotated with bot state.
-
-    Read from the calendar rather than the meetings table on purpose: the table
-    holds only calls the sweep chose to book, so an event the notetaker skips —
-    "deep work (no calls please)" — has no row, and an agenda built from the
-    table alone could never show it as Off.
-
-    A calendar outage empties the agenda but must not empty the page: the stats
-    card has nothing to do with Google being reachable.
-    """
-    now = datetime.now(timezone.utc)
-    today_start, tomorrow_start, day_after_start = day_bounds(tz_name, now)
-
-    try:
-        events = await run_in_threadpool(
-            calendar.list_events, str(user_id), today_start, day_after_start
-        )
-    except Exception:
-        log.exception("dashboard.calendar_unavailable", user_id=str(user_id))
-        return DashboardMeetings(timezone=tz_name, today=[], tomorrow=[])
-
-    rows = await db.scalars(select(Meeting).where(Meeting.user_id == user_id))
-    by_event = {m.calendar_event_id: m for m in rows if m.calendar_event_id}
-
-    today: list[AgendaItem] = []
-    tomorrow: list[AgendaItem] = []
-
-    for event in events:
-        event_id = event.get("id")
-        bounds = event_bounds(event)
-        # All-day entries have no dateTime and no place on a timed agenda.
-        if not event_id or not bounds:
-            continue
-        starts_at, ends_at = bounds
-
-        meeting = by_event.get(str(event_id))
-        link = link_from_event(event)
-        bot_on, bot_editable = bot_flags(meeting, starts_at, link is not None, now)
-
-        item = AgendaItem(
-            calendar_event_id=str(event_id),
-            meeting_id=meeting.id if meeting else None,
-            title=event.get("summary"),
-            starts_at=starts_at,
-            ends_at=ends_at,
-            meeting_url=link[0] if link else None,
-            bot_on=bot_on,
-            bot_editable=bot_editable,
-        )
-
-        if starts_at < tomorrow_start:
-            today.append(item)
-        elif starts_at < day_after_start:
-            tomorrow.append(item)
-
-    today.sort(key=lambda i: i.starts_at)
-    tomorrow.sort(key=lambda i: i.starts_at)
-    return DashboardMeetings(timezone=tz_name, today=today, tomorrow=tomorrow)
-```
-
-- [ ] **Step 5: Wire the agenda into build_summary**
-
-Replace the stubbed `build_summary` body from Task 4 with:
-
-```python
-async def build_summary(db: AsyncSession, user: User) -> DashboardSummary:
-    stats = await load_stats(db, user.id)
-    mailman_settings = await get_or_create_settings(db, user.id)
-    meetings = await load_agenda(db, user.id, mailman_settings.timezone or "UTC")
-    return DashboardSummary(
-        user=DashboardUser(first_name=first_name(user)),
-        setup=DashboardSetup(state=setup_state(user), initial_sync_at=user.initial_sync_at),
-        stats=stats,
-        meetings=meetings,
-    )
-```
-
-- [ ] **Step 6: Verify day bucketing against a non-UTC timezone**
+- [ ] **Step 8: Verify day bucketing against a non-UTC timezone**
 
 `day_bounds` is a pure function, so exercise it directly without a database:
 
@@ -1030,7 +947,7 @@ Expected:
 - `UTC` → three clean midnights on the 28th, 29th, 30th.
 - `Not/AZone` → falls back to the UTC values rather than raising.
 
-- [ ] **Step 7: Verify the agenda against a real calendar**
+- [ ] **Step 9: Verify the agenda against a real calendar**
 
 Call `GET /v1/dashboard/summary` again while authenticated, with at least one event on today's calendar.
 
@@ -1041,7 +958,7 @@ Check each of these:
 4. A past event from earlier today has `bot_editable: false`.
 5. `timezone` echoes the user's `mailman_settings.timezone`.
 
-- [ ] **Step 8: Verify a calendar failure degrades gracefully**
+- [ ] **Step 10: Verify a calendar failure degrades gracefully**
 
 Temporarily break the calendar call to confirm the page survives it — in `load_agenda`, add `raise RuntimeError("boom")` as the first line of the `try` block, restart the API, and call the endpoint.
 
@@ -1049,26 +966,30 @@ Expected: HTTP **200**, with `stats` and `setup` fully populated and `today`/`to
 
 **Remove the `raise` line before continuing.**
 
-- [ ] **Step 9: Check lint**
+- [ ] **Step 11: Check lint**
 
 Run: `uv run ruff check src`
-Expected: the 2 pre-existing errors, no new ones.
+Expected: still the 2 remaining pre-existing errors, no new ones.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add src/services/dashboard/summary.py
+git add src/services/dashboard/ src/schemas/dashboard.py src/api/v1/dashboard.py src/api/router.py
 git commit -m "$(cat <<'EOF'
-feat: calendar-backed Today/Tomorrow agenda on the dashboard
+feat: GET /v1/dashboard/summary
 
-Read from the calendar rather than the meetings table: that table holds
-only calls the sweep chose to book, so an event the notetaker skips has no
-row and could never render as Off.
+One aggregate endpoint rather than a client-side fan-out, so the server
+owns day boundaries and the page has one loading state. Setup state comes
+from users.initial_sync_at alone — the layout already gates on Gmail being
+connected, so re-checking would cost a Composio call per page load to
+restate a known fact.
 
-Day boundaries come from the user's stored timezone and are built from
-calendar dates, not 24-hour deltas, so a DST transition day still buckets
-on local midnight. A calendar outage empties the agenda and leaves the
-rest of the page intact.
+The agenda reads from the calendar rather than the meetings table: that
+table holds only calls the sweep chose to book, so an event the notetaker
+skips has no row and could never render as Off. Day boundaries come from
+the user's stored timezone and are built from calendar dates, not 24-hour
+deltas, so a DST transition day still buckets on local midnight. A
+calendar outage empties the agenda and leaves the rest of the page intact.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1077,14 +998,14 @@ EOF
 
 ---
 
-## Task 6: Turning the notetaker on for a calendar event
+## Task 5: Turning the notetaker on for a calendar event
 
 **Files:**
 - Modify: `src/schemas/meetings.py`
 - Modify: `src/api/v1/meetings.py`
 
 **Interfaces:**
-- Consumes: `store.upsert_from_event(db, user_id, event) -> tuple[Meeting, bool]`; `calendar.list_events`; `link_from_event`; `join_now.delay`; the `BOT_LOCKED_STATUSES` rule from Task 5.
+- Consumes: `store.upsert_from_event(db, user_id, event) -> tuple[Meeting, bool]`; `calendar.list_events`; `link_from_event`; `join_now.delay`; the `BOT_LOCKED_STATUSES` rule from Task 4.
 - Produces: `POST /v1/meetings/bot` accepting `{"calendar_event_id": str}`, returning `MeetingRead` with `202 Accepted`.
 
 - [ ] **Step 1: Add the request schema**
@@ -1248,14 +1169,14 @@ EOF
 
 ---
 
-## Task 7: Frontend API client
+## Task 6: Frontend API client
 
 **Files:**
 - Create: `inboxos-web/src/lib/dashboard.ts`
 - Modify: `inboxos-web/src/components/app/icons.tsx`
 
 **Interfaces:**
-- Consumes: `apiFetch` from `@/lib/api`; the payload shape from Tasks 4-6.
+- Consumes: `apiFetch` from `@/lib/api`; the payload shape from Tasks 4-5.
 - Produces:
   - Types `DashboardSummary`, `AgendaItem`, `DashboardStats`, `DashboardSetup`, `DashboardMeetings`
   - `getDashboardSummary(): Promise<DashboardSummary>`
@@ -1386,13 +1307,13 @@ EOF
 
 ---
 
-## Task 8: The inbox setup card
+## Task 7: The inbox setup card
 
 **Files:**
 - Create: `inboxos-web/src/components/app/InboxSetupCard.tsx`
 
 **Interfaces:**
-- Consumes: `DashboardSetup`, `DashboardStats` (Task 7); `Card` from `@/components/ui/Card`; `ProgressRing` from `@/components/app/ProgressRing`; `EnvelopeIcon`, `DraftsIcon` from `@/components/app/icons`.
+- Consumes: `DashboardSetup`, `DashboardStats` (Task 6); `Card` from `@/components/ui/Card`; `ProgressRing` from `@/components/app/ProgressRing`; `EnvelopeIcon`, `DraftsIcon` from `@/components/app/icons`.
 - Produces: default export `InboxSetupCard({ setup, stats }: { setup: DashboardSetup; stats: DashboardStats })`.
 
 - [ ] **Step 1: Write the component**
@@ -1504,14 +1425,14 @@ EOF
 
 ---
 
-## Task 9: The meetings panel
+## Task 8: The meetings panel
 
 **Files:**
 - Create: `inboxos-web/src/components/app/MeetingRow.tsx`
 - Modify (rewrite): `inboxos-web/src/components/app/MeetingsPanel.tsx`
 
 **Interfaces:**
-- Consumes: `AgendaItem`, `formatTimeRange`, `enableMeetingBot`, `disableMeetingBot` (Task 7); `Card`; `ExternalLinkIcon`.
+- Consumes: `AgendaItem`, `formatTimeRange`, `enableMeetingBot`, `disableMeetingBot` (Task 6); `Card`; `ExternalLinkIcon`.
 - Produces:
   - `MeetingRow({ item, timezone, onToggle }: { item: AgendaItem; timezone: string; onToggle: (item: AgendaItem, next: boolean) => void })`
   - `MeetingsPanel({ meetings, onToggle }: { meetings: DashboardMeetings; onToggle: (item: AgendaItem, next: boolean) => void })`
@@ -1656,7 +1577,7 @@ export default function MeetingsPanel({
 
 Run: `npx tsc --noEmit`
 
-Expected: **one error**, in `src/app/dashboard/page.tsx`, because the old page still renders `<MeetingsPanel />` with no props. That error is expected and is fixed in Task 11. No other errors.
+Expected: **one error**, in `src/app/dashboard/page.tsx`, because the old page still renders `<MeetingsPanel />` with no props. That error is expected and is fixed in Task 10. No other errors.
 
 - [ ] **Step 4: Commit**
 
@@ -1677,14 +1598,14 @@ EOF
 
 ---
 
-## Task 10: The two static banners
+## Task 9: The two static banners
 
 **Files:**
 - Create: `inboxos-web/src/components/app/SubscribeBanner.tsx`
 - Create: `inboxos-web/src/components/app/InviteTeamBanner.tsx`
 
 **Interfaces:**
-- Consumes: `Card`; `UsersIcon` (Task 7).
+- Consumes: `Card`; `UsersIcon` (Task 6).
 - Produces: default exports `SubscribeBanner()` (no props) and `InviteTeamBanner()` (no props).
 
 Both are deliberately presentational: no billing or team model exists in the backend. Do not invent endpoints for them.
@@ -1790,7 +1711,7 @@ The Invite team button points at `/dashboard/settings`. Open `src/app/dashboard/
 - [ ] **Step 3: Verify it typechecks**
 
 Run: `npx tsc --noEmit`
-Expected: still only the one expected `page.tsx` error from Task 9.
+Expected: still only the one expected `page.tsx` error from Task 8.
 
 - [ ] **Step 4: Commit**
 
@@ -1811,7 +1732,7 @@ EOF
 
 ---
 
-## Task 11: The page rewrite
+## Task 10: The page rewrite
 
 **Files:**
 - Modify (rewrite): `inboxos-web/src/app/dashboard/page.tsx`
@@ -1819,7 +1740,7 @@ EOF
 - Modify: `inboxos-web/src/components/app/AskBar.tsx`
 
 **Interfaces:**
-- Consumes: everything from Tasks 7-10.
+- Consumes: everything from Tasks 6-9.
 - Produces: the finished page. `isSetupDone` and `setSetupDone` no longer exist.
 
 - [ ] **Step 1: Rewrite the page**
@@ -2026,7 +1947,7 @@ Change nothing else. The props, the chips, the mic, the busy spinner, and the su
 - [ ] **Step 5: Verify it typechecks and builds**
 
 Run: `npx tsc --noEmit && npm run lint && npm run build`
-Expected: all three clean. The `page.tsx` error expected since Task 9 is now resolved.
+Expected: all three clean. The `page.tsx` error expected since Task 8 is now resolved.
 
 - [ ] **Step 6: Verify the page in a browser**
 
@@ -2081,17 +2002,17 @@ EOF
 | §2 Recording service | 2 |
 | §2.1 Call sites (categorization, drafts, sync stamp) | 3 |
 | §3 Setup state | 4 |
-| §4.1 Calendar-backed agenda | 5 |
-| §4.2 Timezone bucketing | 5 |
-| §4.3 `bot_on` / `bot_editable` | 5 |
-| §5.1 `GET /dashboard/summary` | 4 (stats/setup) + 5 (agenda) |
-| §5.2 `POST /meetings/bot` | 6 |
-| §6.1 `lib/dashboard.ts` | 7 |
-| §6.2 Page rewrite + auth cleanup | 11 |
-| §6.3 `InboxSetupCard` | 8 |
-| §6.3 `MeetingsPanel` / `MeetingRow` | 9 |
-| §6.3 Banners | 10 |
-| §6.3 AskBar restyle | 11 |
+| §4.1 Calendar-backed agenda | 4 |
+| §4.2 Timezone bucketing | 4 |
+| §4.3 `bot_on` / `bot_editable` | 4 |
+| §5.1 `GET /dashboard/summary` | 4 |
+| §5.2 `POST /meetings/bot` | 5 |
+| §6.1 `lib/dashboard.ts` | 6 |
+| §6.2 Page rewrite + auth cleanup | 10 |
+| §6.3 `InboxSetupCard` | 7 |
+| §6.3 `MeetingsPanel` / `MeetingRow` | 8 |
+| §6.3 Banners | 9 |
+| §6.3 AskBar restyle | 10 |
 | §7 Verification | Per-task verification steps |
 
 No gaps.
@@ -2099,11 +2020,10 @@ No gaps.
 **Type consistency** — checked across task boundaries:
 
 - `record_draft_created(user_id, source_message_id)` is defined in Task 2 and called with `(user_id, e.id)` in Task 3. Consistent.
-- `DashboardStats` / `DashboardSetup` / `AgendaItem` / `DashboardMeetings` are defined in Task 4's schema module, returned by Task 5's service, and mirrored field-for-field by Task 7's TypeScript types. Names and nullability match: `meeting_id`, `title`, and `meeting_url` are nullable on both sides; `starts_at` and `ends_at` are non-null on both.
-- `build_summary(db, user)` is defined in Task 4 and re-defined (not re-signed) in Task 5. Same signature.
-- `MeetingsPanel` takes `{ meetings, onToggle }` in Task 9 and is called with exactly those props in Task 11.
+- `DashboardStats` / `DashboardSetup` / `AgendaItem` / `DashboardMeetings` are defined in Task 4's schema module, returned by Task 4's service, and mirrored field-for-field by Task 6's TypeScript types. Names and nullability match: `meeting_id`, `title`, and `meeting_url` are nullable on both sides; `starts_at` and `ends_at` are non-null on both.
+- `MeetingsPanel` takes `{ meetings, onToggle }` in Task 8 and is called with exactly those props in Task 10.
 - `onToggle: (item: AgendaItem, next: boolean) => void` is identical in `MeetingRow`, `MeetingsPanel`, and the page's `toggleBot`.
-- `BOT_LOCKED_STATUSES` (Task 5) and `LOCKED_STATUSES` (Task 6) hold the same five statuses. The names differ because they live in different modules; both carry a comment pointing at the other, and Task 6 Step 2 states the requirement to keep them in step.
+- `BOT_LOCKED_STATUSES` (Task 4) and `LOCKED_STATUSES` (Task 5) hold the same five statuses. The names differ because they live in different modules; both carry a comment pointing at the other, and Task 5 Step 2 states the requirement to keep them in step.
 
 **Placeholder scan:** no TBDs, no "add error handling", no "similar to Task N". Every code step carries the actual code.
 
@@ -2116,4 +2036,4 @@ One deliberate deviation from the skill's default task shape: steps are **verify
 1. **Task 3 Step 5 is the load-bearing check.** If the count moves on a second `sync_last_7_days` run, the unique constraint is not doing its job and every number on the dashboard is untrustworthy. Do not proceed past it on a "close enough".
 2. **`drafts_created` will read 0 or 1 for most users.** There is exactly one `create_draft` call site in the backend (`services/digest/scheduling.py`), reached only when an incoming email asks to book a meeting. This is correct behaviour, not a bug — the screenshot's "3" came from a product with an auto-reply-draft feature this backend does not have yet (`workers/jobs/reply_draft_job.py` is an empty file).
 3. **The agenda costs one Composio calendar call per dashboard load.** Accepted in the spec. If the dashboard feels slow, that call is the first thing to measure.
-4. **Task 6 does a second calendar read** to resolve the event id. It runs only on toggle-on, not on page load, so it is not on the hot path — but it does mean turning the bot on for an event more than 48 hours out returns 404. `EVENT_LOOKUP_HOURS` is the knob if that proves too tight in practice.
+4. **Task 5 does a second calendar read** to resolve the event id. It runs only on toggle-on, not on page load, so it is not on the hot path — but it does mean turning the bot on for an event more than 48 hours out returns 404. `EVENT_LOOKUP_HOURS` is the knob if that proves too tight in practice.
