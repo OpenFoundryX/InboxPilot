@@ -21,6 +21,7 @@
 
   `make lint` additionally fails because `ruff check src tests` names a `tests` directory that does not exist. **The bar for every backend task is "no NEW ruff errors", not "ruff clean".** Task 3 fixes the `scheduling.py:76` one incidentally because it edits that exact line; leave the other two alone.
 - **Python 3.12**, `line-length = 100` (ruff), `src/` is a bare import root — modules import as `models.x`, `services.x`, never `src.models.x`.
+- **The Postgres compose service is `db`, not `postgres`.** Verified psql invocation: `docker compose exec -T db psql -U inboxos_user -d inboxos -c "..."`. The stack is already up — do not run `make up` or `make build`.
 - **Alembic head is `bb9e0a302824`.** The new migration's `down_revision` must be exactly that string.
 - **Models are registered for autogenerate in `alembic/env.py`**, not in `src/models/__init__.py` (which is empty). A new model file must be added there or autogenerate will silently propose dropping the table.
 - **Commit messages** use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`) matching the existing log, and end with:
@@ -188,11 +189,11 @@ Expected: `Running upgrade bb9e0a302824 -> <new hash>` and no error.
 
 - [ ] **Step 7: Verify the schema landed**
 
-Run: `docker compose exec postgres psql -U inboxos -d inboxos -c "\d activity_events"`
+Run: `docker compose exec -T db psql -U inboxos_user -d inboxos -c "\d activity_events"`
 
 Expected: the table prints with the seven columns, and the constraint list includes `"uq_activity_events_user_kind_ref" UNIQUE CONSTRAINT, btree (user_id, kind, ref_id)`.
 
-If the postgres user or database name differs in your `.env`, read `POSTGRES_USER` / `POSTGRES_DB` from it and substitute.
+These credentials are verified against this project's `.env` and `docker-compose.yml`: the service is `db` (not `postgres`), the user is `inboxos_user`, the database is `inboxos`. Use them exactly.
 
 - [ ] **Step 8: Check for new lint errors**
 
@@ -311,7 +312,7 @@ async def _insert(
 There is no test suite, so exercise it directly. Get a real user id first:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -t -c "SELECT id FROM users LIMIT 1;"
+docker compose exec -T db psql -U inboxos_user -d inboxos -t -c "SELECT id FROM users LIMIT 1;"
 ```
 
 Then, substituting that id:
@@ -331,7 +332,7 @@ record_email_categorized(uid, 'test-msg-2', 'fyi')
 Run:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "SELECT kind, ref_id, category_key FROM activity_events ORDER BY ref_id;"
 ```
 
@@ -342,7 +343,7 @@ Expected: exactly **two** rows — `test-msg-1` and `test-msg-2`. Three rows mea
 Run:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "DELETE FROM activity_events WHERE ref_id LIKE 'test-msg-%';"
 ```
 
@@ -522,9 +523,9 @@ sync_last_7_days('PASTE_USER_ID_HERE', days=2, max_results=5)
 Then:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "SELECT kind, count(*) FROM activity_events GROUP BY kind;"
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "SELECT id, initial_sync_at FROM users;"
 ```
 
@@ -535,7 +536,7 @@ Expected: `email_categorized` has a non-zero count, and that user's `initial_syn
 Note the exact count from Step 4, then run the identical `sync_last_7_days` command a second time and re-check:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "SELECT kind, count(*) FROM activity_events GROUP BY kind;"
 ```
 
@@ -921,7 +922,7 @@ Expected shape:
 Cross-check the number against the table directly:
 
 ```bash
-docker compose exec postgres psql -U inboxos -d inboxos -c \
+docker compose exec -T db psql -U inboxos_user -d inboxos -c \
   "SELECT kind, count(*) FROM activity_events GROUP BY kind;"
 ```
 
