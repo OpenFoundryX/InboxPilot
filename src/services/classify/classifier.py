@@ -87,18 +87,61 @@ def classify(
     raw = resp.choices[0].message.content or "{}"
     try:
         parsed = json.loads(raw)
-        label = parsed.get("label")
-        confidence = float(parsed.get("confidence", 1.0))
-    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+    except json.JSONDecodeError:
+        log.warning("classify.bad_json", raw=raw)
+        return NO_VERDICT
+    if not isinstance(parsed, dict):
         log.warning("classify.bad_json", raw=raw)
         return NO_VERDICT
 
-    # The model answers with a display name; map it back to a stable key. Be
-    # lenient about case and surrounding whitespace before giving up.
-    by_name = {c.display_name.strip().casefold(): c.key for c in categories}
-    key = by_name.get((label or "").strip().casefold())
+    label = parsed.get("label")
+    # A malformed confidence must not void an otherwise-valid label: parse it
+    # independently and fall back to 1.0. Nothing consumes confidence until
+    # Task 9, so a wrong-but-harmless default is the safe failure mode.
+    confidence = _coerce_confidence(parsed.get("confidence"))
+
+    # `response_format={"type": "json_object"}` guarantees valid JSON, not a
+    # typed schema — the model can hand back a label that is an int, list,
+    # dict, bool, or null. This call sits on the path Celery retries with
+    # autoretry_for=(Exception,); an uncaught AttributeError here (from
+    # calling .strip() on a non-string) would burn three deterministic
+    # retries (temperature=0, identical input) before failing outright,
+    # never labeling the message and never degrading to NO_VERDICT.
+    if not isinstance(label, str):
+        log.warning("classify.non_string_label", label=label)
+        return NO_VERDICT
+
+    # Map the display name back to a stable key. Lenient about case and
+    # surrounding whitespace. `display_name` carries no uniqueness constraint
+    # (only `key` does), so two categories can normalize to the same lookup
+    # key — build first-wins, deterministically, and log the collision so a
+    # silently-shadowed category is diagnosable instead of misdirecting
+    # classification forever with no signal.
+    by_name: dict[str, str] = {}
+    for c in categories:
+        norm = c.display_name.strip().casefold()
+        if norm in by_name:
+            log.warning(
+                "classify.duplicate_display_name",
+                display_name=c.display_name,
+                kept_key=by_name[norm],
+                shadowed_key=c.key,
+            )
+            continue
+        by_name[norm] = c.key
+
+    key = by_name.get(label.strip().casefold())
     if key is None:
         log.warning("classify.unknown_label", label=label)
         return NO_VERDICT
 
-    return Verdict(key=key, confidence=max(0.0, min(1.0, confidence)))
+    return Verdict(key=key, confidence=confidence)
+
+
+def _coerce_confidence(value: object) -> float:
+    """Coerce the model's confidence to [0, 1]; default 1.0 on anything unusable."""
+    try:
+        conf = float(value) if value is not None else 1.0
+    except (TypeError, ValueError):
+        conf = 1.0
+    return max(0.0, min(1.0, conf))
