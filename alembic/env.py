@@ -14,6 +14,7 @@ from models.base import Base
 from models import auth as auth_models  # noqa: F401
 from models import chat as chat_models  # noqa: F401
 from models import mailman as mailman_models  # noqa: F401
+from models import meetings as meetings_models  # noqa: F401
 from models import reminders as reminders_models  # noqa: F401
 from models import routines as routines_models  # noqa: F401
 from models import users as users_models  # noqa: F401

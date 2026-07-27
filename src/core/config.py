@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     PUBLIC_BASE_URL: str = "https://9d57-2401-4900-8813-6c30-87f-f481-54a0-d6e6.ngrok-free.app"
     MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
 
+    # Meeting notetaker. The provider joins calls and transcribes; summarizing
+    # and delivery stay in-app. Swap MEETING_BOT_PROVIDER to change vendors.
+    MEETING_BOT_PROVIDER: str = "recall"
+    # Region host — must match the region the API key was issued in.
+    RECALL_API_BASE: str = "https://us-east-1.recall.ai"
+    RECALL_API_KEY: str = ""
+    # Workspace webhook signing secret ("whsec_...") from the Recall dashboard.
+    RECALL_WEBHOOK_SECRET: str = ""
+    RECALL_TIMEOUT_SECONDS: float = 30.0
+
 
 @lru_cache
 def get_settings() -> Settings:

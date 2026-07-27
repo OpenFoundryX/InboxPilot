@@ -34,6 +34,8 @@ from services.digest.invoices import summarize_invoices
 from services.digest.nudges import chase_open_threads, reconnect_suggestions
 from services.digest.scheduling import draft_meeting_replies
 from services.mailman.store import get_or_create_settings
+from services.meetings.digest import meetings_section
+from services.meetings.store import get_or_create_settings as get_or_create_meeting_settings
 from services.notify import send_to_inbox
 from workers.celery_app import celery_app
 
@@ -89,9 +91,25 @@ async def _sweep(db) -> dict:
     return {"ran": ran}
 
 
+async def _meetings_extra(db, user_id) -> str:
+    """Yesterday's meeting recaps, for users who want them in the briefing.
+
+    Never fatal: a missing meetings section shouldn't cost the user their mail
+    briefing.
+    """
+    try:
+        settings = await get_or_create_meeting_settings(db, user_id)
+        if not (settings.enabled and settings.include_in_digest):
+            return ""
+        return await meetings_section(db, user_id)
+    except Exception:
+        log.warning("routines.meetings_section_failed", user_id=str(user_id), exc_info=True)
+        return ""
+
+
 async def _run_routine(db, routine: Routine, user_id: str, email: str, tz: str) -> None:
     if routine.type == ROUTINE_BRIEFING:
-        subject, body = compose_briefing(user_id, tz)
+        subject, body = compose_briefing(user_id, tz, extra=await _meetings_extra(db, routine.user_id))
         send_to_inbox(user_id, email, subject, body)
         return
     if routine.type == ROUTINE_CHASE_THREADS:
