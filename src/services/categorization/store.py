@@ -4,13 +4,15 @@ Get-or-create throughout, matching `services.mailman.store`: the first read of a
 user's taxonomy seeds the six built-ins, so nothing has to happen at signup.
 """
 
+import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.categorization import (
     BUILTIN_CATEGORIES,
+    CategorizationRule,
     CategorizationSettings,
     EmailCategory,
     default_actions,
@@ -77,3 +79,30 @@ async def get_or_create_settings(
         db.add(row)
         await db.flush()
     return row
+
+
+def slugify(display_name: str) -> str:
+    """Derive a stable key from a display name: 'Client work' -> 'client_work'."""
+    return re.sub(r"[^a-z0-9]+", "_", display_name.strip().casefold()).strip("_")
+
+
+async def delete_category(
+    db: AsyncSession, user_id: uuid.UUID, category: EmailCategory
+) -> None:
+    """Remove a custom category and everything that pointed at it.
+
+    The Gmail label is deliberately left in place: nothing is stripped from the
+    user's mail, so this is non-destructive and undoable by hand.
+    """
+    await db.execute(
+        delete(CategorizationRule).where(
+            CategorizationRule.user_id == user_id,
+            CategorizationRule.category_key == category.key,
+        )
+    )
+    settings_row = await get_or_create_settings(db, user_id)
+    if settings_row.fallback_category_key == category.key:
+        settings_row.fallback_category_key = None
+
+    await db.delete(category)
+    await db.flush()

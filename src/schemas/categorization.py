@@ -30,6 +30,15 @@ class CategoryRead(BaseModel):
     actions: CategoryActions
 
 
+class CategoryCreate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=64)
+    description: str = Field(min_length=1)
+    color_bg: str = Field(default="#999999", pattern=HEX_COLOR)
+    color_text: str = Field(default="#ffffff", pattern=HEX_COLOR)
+    sort_order: int = Field(default=100, ge=0)
+    actions: CategoryActions = CategoryActions()
+
+
 class CategoryUpdate(BaseModel):
     """Partial update. `key` and `gmail_label` are absent by design — Gmail has
     no rename-label action, so they are fixed at creation."""
