@@ -10,6 +10,8 @@ from integrations.composio.gmail import FETCH_EMAILS, LIST_LABELS
 
 BATCH_MODIFY = "GMAIL_BATCH_MODIFY_MESSAGES"
 INBOX_LABEL = "INBOX"
+UNREAD_LABEL = "UNREAD"
+STARRED_LABEL = "STARRED"
 HOLD_LABEL_NAME = "inboxos-later"
 
 # Per-process cache of resolved label ids, keyed by (user_id, casefolded name).
@@ -79,6 +81,54 @@ def add_label(user_id: str, message_ids: list[str], label_name: str) -> None:
     if not label_id:
         raise RuntimeError(f"label {label_name!r} not found for user {user_id}")
     _modify(user_id, message_ids, add=[label_id], remove=[])
+
+
+def set_inbox_state(user_id: str, message_ids: list[str], *, in_inbox: bool) -> None:
+    """Add or remove INBOX on messages, leaving every other label untouched.
+
+    Used to bring already-classified mail in line after the user flips a
+    category between "keep in my inbox" and "move out of my inbox".
+    """
+    if in_inbox:
+        _modify(user_id, message_ids, add=[INBOX_LABEL], remove=[])
+    else:
+        _modify(user_id, message_ids, add=[], remove=[INBOX_LABEL])
+
+
+def apply_category(
+    user_id: str,
+    message_ids: list[str],
+    label_name: str,
+    actions: dict[str, bool] | None = None,
+) -> None:
+    """Apply a category label and its side effects in one Composio round trip.
+
+    `actions` keys are `archive`, `mark_read`, and `star` (see
+    `models.categorization.CATEGORY_ACTIONS`). Batching them with the label is
+    the point: four separate calls per message would quadruple the Gmail cost of
+    classification.
+    """
+    label_id = resolve_label_id(user_id, label_name)
+    if not label_id:
+        raise RuntimeError(f"label {label_name!r} not found for user {user_id}")
+
+    actions = actions or {}
+    add = [label_id]
+    remove = []
+    if actions.get("archive"):
+        remove.append(INBOX_LABEL)
+    if actions.get("mark_read"):
+        remove.append(UNREAD_LABEL)
+    if actions.get("star"):
+        add.append(STARRED_LABEL)
+
+    # Belt-and-braces: a category label can resolve to the same id as one of
+    # the action labels above (e.g. a mis-provisioned/legacy category sharing
+    # a Gmail system label id). A label id must never appear in both lists in
+    # one batchModify, so drop anything in `add` from `remove`.
+    remove = [lid for lid in remove if lid not in add]
+
+    _modify(user_id, message_ids, add=add, remove=remove)
 
 
 def remove_labels(user_id: str, message_ids: list[str], label_names: list[str]) -> None:

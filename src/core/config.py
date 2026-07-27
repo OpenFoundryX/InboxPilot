@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
+    # Models a user may pick for their classifier. OPENAI_MODEL is always
+    # allowed on top of this, so changing the default cannot invalidate a
+    # per-user choice that is already stored.
+    CLASSIFIER_MODELS: str = "gpt-4o-mini,gpt-4o"
 
     COMMANDS_LOOKBACK: str = "newer_than:2d"
     COMMANDS_MAX_PER_SWEEP: int = 10
@@ -72,6 +76,11 @@ class Settings(BaseSettings):
     # Workspace webhook signing secret ("whsec_...") from the Recall dashboard.
     RECALL_WEBHOOK_SECRET: str = ""
     RECALL_TIMEOUT_SECONDS: float = 30.0
+
+    @property
+    def allowed_classifier_models(self) -> set[str]:
+        listed = {m.strip() for m in self.CLASSIFIER_MODELS.split(",") if m.strip()}
+        return listed | {self.OPENAI_MODEL}
 
 
 @lru_cache

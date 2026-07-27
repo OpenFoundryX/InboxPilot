@@ -13,9 +13,11 @@ from openai import OpenAI
 
 from core.config import settings
 from core.logging import get_logger
-from services.classify.classifier import LABEL_NAMES
+from models.categorization import BUILTIN_CATEGORIES
 
 log = get_logger(__name__)
+
+_GMAIL_LABELS = [c.gmail_label for c in BUILTIN_CATEGORIES]
 
 # Confirmation replies we send carry this subject prefix; never treat them as
 # commands (loop guard, belt-and-suspenders alongside the inboxos-rules label).
@@ -60,12 +62,12 @@ Rules:
 - "deliver N times a day" -> set_routine delivery_mode=times, times_per_day=N.
 - "deliver at 1pm and 6pm" -> delivery_mode=custom_daily, custom_times=["13:00","18:00"].
 - "every N minutes/hours" -> delivery_mode=interval with interval_minutes.
-- If asked to auto-label, apply_label should be one of: {", ".join(LABEL_NAMES)} (or a label the user names).
+- If asked to auto-label, apply_label should be one of: {", ".join(_GMAIL_LABELS)} (or a label the user names).
 - "archive"/"skip inbox" -> create_rule with archive=true. "delete"/"trash" -> trash=true.
 - If the user says "current"/"existing"/"already"/"all my ... (that are already here)" alongside a rule,
   ALSO set apply_to_existing=true so mail already in the mailbox is acted on, not just future mail.
   "archive current AND future X" is a SINGLE create_rule with archive=true and apply_to_existing=true.
-- The user's own labels are: {", ".join(LABEL_NAMES)}. These are labels, NOT Gmail categories.
+- The user's own labels are: {", ".join(_GMAIL_LABELS)}. These are labels, NOT Gmail categories.
   When the user names one of them (e.g. "marketing emails", "my fyi mail"), the criteria MUST be
   query "label:<name>" — e.g. "marketing" -> "label:marketing", "to do" -> "label:to do".
   Do NOT translate "marketing" to "category:promotions". Only use "category:promotions" when the

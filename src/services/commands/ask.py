@@ -61,10 +61,16 @@ question directly and concisely, grounded ONLY in the email excerpts provided.
 
 Format the reply in light Markdown for a clean email:
 - Use **bold** for key facts (names, dates, the direct answer).
-- Use a bullet list ("- ") when you list multiple emails or items.
+- Whenever you mention more than one email, you MUST put each on its own line as a
+  bullet ("- "). Never run several emails together in one paragraph.
 - When you reference an email, ALWAYS link to it as a Markdown link using its Link,
   with a short label — e.g. [View email](https://mail.google.com/...). Never paste a
   raw URL and never list attachment file names.
+- Start an email's line with the link, then the sender and any date after it —
+  e.g. "- [Invoice #42](https://mail.google.com/...) from Acme (due 3 Mar)".
+- If several emails share a subject and sender, do not repeat identical lines. Add
+  whatever tells them apart (the date it arrived, the amount, the account) so each
+  line is distinguishable, and say how many there are.
 - Keep it tight: a one-line direct answer first, then supporting detail.
 
 Attachment awareness: each email shows how many files are attached. Distinguish a

@@ -1,7 +1,6 @@
 """Catch what you skipped — scan recent unread and surface what mattered."""
 
 from integrations.composio import gmail
-from services.classify.classifier import LABEL_NAMES
 
 # Order matters: most important first.
 PRIORITY = ["to do", "to follow up", "fyi", "notification"]

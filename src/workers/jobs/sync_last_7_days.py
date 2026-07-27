@@ -10,17 +10,12 @@ is cheap.
 from core.logging import get_logger
 from integrations.composio import gmail
 from integrations.composio.triggers import ensure_gmail_new_message_trigger
-from services.classify.classifier import LABEL_NAMES
-from services.mailman import gmail_ops
+from models.categorization import BUILTIN_CATEGORIES
+from services.categorization import backfill
+from services.categorization.pipeline import get_config
 from workers.celery_app import celery_app
-from workers.jobs.classify_new_email import classify_new_email
 
 log = get_logger(__name__)
-
-# Ceiling on backfill classification. The fetch itself may return far more (see
-# gmail.FETCH_ALL_CAP); classifying all of it would mean thousands of LLM calls
-# on connect. Newest mail is the mail that matters.
-BACKFILL_CLASSIFY_MAX = 200
 
 
 @celery_app.task(name="jobs.sync_last_7_days")
@@ -38,7 +33,18 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
         log.exception("gmail.ensure_labels_failed", user_id=user_id)
 
     emails = gmail.fetch_recent_emails(user_id, days=days, max_results=max_results)
-    queued = _queue_backfill_classification(user_id, emails)
+
+    # get_config is a DB round trip and, unlike ensure_labels above, has no
+    # autoretry. A transient DB error here must not abort the task before
+    # _install_trigger() runs below — missing the trigger means the user gets
+    # no mail at all, which is worse than falling back to the built-in labels.
+    try:
+        label_names = [c.gmail_label for c in get_config(user_id).categories]
+    except Exception:
+        log.exception("categorization.config_unavailable", user_id=user_id)
+        label_names = [c.gmail_label for c in BUILTIN_CATEGORIES]
+
+    queued = backfill.queue_unlabelled(user_id, emails, label_names)
     trigger_id, trigger_error = _install_trigger(user_id)
 
     log.info(
@@ -56,23 +62,6 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
         "trigger_error": trigger_error,
         "emails": [e.model_dump() if hasattr(e, "model_dump") else e for e in emails],
     }
-
-
-def _queue_backfill_classification(user_id: str, emails: list) -> int:
-    """Enqueue one classify task per unlabelled message, newest first."""
-    known = {lid for name in LABEL_NAMES if (lid := gmail_ops.resolve_label_id(user_id, name))}
-
-    queued = 0
-    for e in emails:
-        if queued >= BACKFILL_CLASSIFY_MAX:
-            break
-        if not e.id or known.intersection(e.labels or []):
-            continue
-        classify_new_email.delay(
-            user_id, e.id, sender=e.sender, subject=e.subject, snippet=e.snippet
-        )
-        queued += 1
-    return queued
 
 
 def _install_trigger(user_id: str) -> tuple[str | None, str | None]:
