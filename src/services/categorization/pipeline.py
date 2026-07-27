@@ -117,6 +117,7 @@ def categorize_and_apply(
             log.warning(
                 "categorize.rule_target_missing",
                 user_id=user_id,
+                message_id=message_id,
                 category_key=rule.category_key,
             )
             return None

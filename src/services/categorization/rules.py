@@ -46,8 +46,12 @@ def matches(
     if rule.match_type == MATCH_SENDER_ADDRESS:
         return _address(sender) == value
     if rule.match_type == MATCH_SENDER_DOMAIN:
-        # Accept the value with or without a leading '@'.
-        return _domain(sender) == value.lstrip("@")
+        # Accept the value with or without a leading '@'. Guard the DERIVED
+        # target: "@" survives the empty-value check above but reduces to "",
+        # and _domain() also returns "" for any sender parseaddr cannot
+        # resolve — so an unguarded "" target matches every malformed sender.
+        target = value.lstrip("@")
+        return bool(target) and _domain(sender) == target
     if rule.match_type == MATCH_SUBJECT_KEYWORD:
         return value in (subject or "").casefold()
     if rule.match_type == MATCH_BODY_KEYWORD:
