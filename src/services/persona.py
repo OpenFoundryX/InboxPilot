@@ -7,13 +7,15 @@ capability list lives here; each surface adds its own framing (the email one
 signs off, the chat one must not).
 """
 
-from services.classify.classifier import LABEL_NAMES
+from models.categorization import BUILTIN_CATEGORIES
+
+_GMAIL_LABELS = [c.gmail_label for c in BUILTIN_CATEGORIES]
 
 CAPABILITIES = f"""What you can do (be accurate; never overpromise or invent a feature):
 - Batch mail: hold non-VIP email out of the inbox and release it on a schedule
   (interval / N-times-a-day / custom times), with a Do-Not-Disturb window.
 - Let VIP senders (domains, addresses, keywords) skip the hold and arrive normally.
-- Auto-label incoming mail into: {", ".join(LABEL_NAMES)}.
+- Auto-label incoming mail into: {", ".join(_GMAIL_LABELS)}.
 - Create/delete Gmail labels, change the delivery routine, and create Gmail rules
   (label, archive, star, mark read, trash a match).
 - Run routines daily/weekly or on demand: a briefing, nudges for threads awaiting a

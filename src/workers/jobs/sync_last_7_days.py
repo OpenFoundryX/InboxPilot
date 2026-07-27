@@ -10,7 +10,7 @@ is cheap.
 from core.logging import get_logger
 from integrations.composio import gmail
 from integrations.composio.triggers import ensure_gmail_new_message_trigger
-from services.classify.classifier import LABEL_NAMES
+from models.categorization import BUILTIN_CATEGORIES
 from services.mailman import gmail_ops
 from workers.celery_app import celery_app
 from workers.jobs.classify_new_email import classify_new_email
@@ -60,7 +60,8 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
 
 def _queue_backfill_classification(user_id: str, emails: list) -> int:
     """Enqueue one classify task per unlabelled message, newest first."""
-    known = {lid for name in LABEL_NAMES if (lid := gmail_ops.resolve_label_id(user_id, name))}
+    names = [c.gmail_label for c in BUILTIN_CATEGORIES]
+    known = {lid for name in names if (lid := gmail_ops.resolve_label_id(user_id, name))}
 
     queued = 0
     for e in emails:
