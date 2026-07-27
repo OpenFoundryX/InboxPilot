@@ -31,9 +31,9 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
     cap the fetch. Returns a summary; email bodies are metadata-only.
     """
     try:
-        created = gmail.ensure_labels(user_id)
-        if created:
-            log.info("gmail.labels_provisioned", user_id=user_id, created=created)
+        sync = gmail.ensure_labels(user_id)
+        if sync.created:
+            log.info("gmail.labels_provisioned", user_id=user_id, created=sync.created)
     except Exception:
         log.exception("gmail.ensure_labels_failed", user_id=user_id)
 

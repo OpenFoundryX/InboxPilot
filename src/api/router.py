@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from api.v1 import auth, chat, integrations, mailman, users, webhooks
+from api.v1 import auth, chat, integrations, mailman, users, webhooks, meetings
 
 api_router = APIRouter()
 

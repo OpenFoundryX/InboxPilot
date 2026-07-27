@@ -20,6 +20,19 @@ HOLD_LABEL_NAME = "inboxos-later"
 _LABEL_ID_CACHE: dict[tuple[str, str], str] = {}
 
 
+def cache_label_ids(user_id: str, ids: dict[str, str]) -> None:
+    """Warm the cache from label ids a caller already has in hand.
+
+    Lets a caller that just listed labels for its own reasons (e.g.
+    `gmail.ensure_labels`) hand the result over instead of forcing
+    `resolve_label_id` into a second, identical round trip. Keys are
+    casefolded label names.
+    """
+    for name, lid in ids.items():
+        if name and lid:
+            _LABEL_ID_CACHE[(user_id, name)] = lid
+
+
 def resolve_label_id(user_id: str, name: str) -> str | None:
     """Resolve a Gmail label name to its id for a user (successful lookups cached).
 
@@ -33,11 +46,13 @@ def resolve_label_id(user_id: str, name: str) -> str | None:
     resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
     if resp.get("successful") is False:
         return None
-    for label in (resp.get("data") or {}).get("labels") or []:
-        lid = label.get("id")
-        lname = (label.get("name") or "").casefold()
-        if lid and lname:
-            _LABEL_ID_CACHE[(user_id, lname)] = lid
+    cache_label_ids(
+        user_id,
+        {
+            (label.get("name") or "").casefold(): label.get("id")
+            for label in (resp.get("data") or {}).get("labels") or []
+        },
+    )
     return _LABEL_ID_CACHE.get(key)
 
 

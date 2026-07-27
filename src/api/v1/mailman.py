@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from api.deps import DbSession
-from integrations.composio import gmail
 from models.mailman import (
     MODE_CUSTOM_DAILY,
     MODE_INTERVAL,
@@ -21,16 +20,14 @@ from models.mailman import (
     VipRule,
 )
 from models.users import User
-from schemas.email import EmailSummary
 from schemas.mailman import (
-    MailmanStatus,
     SettingsRead,
     SettingsUpdate,
     VipRead,
     VipUpdate,
 )
 from services.auth.dependencies import get_current_user
-from services.mailman import filters, gmail_ops
+from services.mailman import filters
 from services.mailman.store import get_or_create_settings, get_or_create_vip
 
 router = APIRouter(prefix="/mailman", tags=["mailman"])
@@ -91,28 +88,6 @@ async def update_vip(payload: VipUpdate, user: CurrentUser, db: DbSession):
         await _apply_hold_filter(settings, vip)
 
     return vip
-
-
-@router.get("/held", response_model=list[EmailSummary])
-async def list_held(user: CurrentUser) -> list[EmailSummary]:
-
-    return await run_in_threadpool(
-        gmail.fetch_by_query, 
-        str(user.id), 
-        f"label:{gmail_ops.HOLD_LABEL_NAME}", 
-        50
-    )
-
-
-@router.get("/status", response_model=MailmanStatus)
-async def status(user: CurrentUser, db: DbSession) -> MailmanStatus:
-    settings = await get_or_create_settings(db, user.id)
-    held = await run_in_threadpool(gmail_ops.held_message_ids, str(user.id))
-
-    return MailmanStatus(
-        is_active=settings.is_active, 
-        held_count=len(held)
-    )
 
 
 @router.post("/start", response_model=SettingsRead)

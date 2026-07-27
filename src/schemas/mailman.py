@@ -56,8 +56,3 @@ class VipUpdate(BaseModel):
     domains: list[str] | None = None
     addresses: list[str] | None = None
     keywords: list[str] | None = None
-
-
-class MailmanStatus(BaseModel):
-    is_active: bool
-    held_count: int

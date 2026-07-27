@@ -11,6 +11,7 @@ Note: these call the Composio SDK, which is synchronous and does blocking HTTP.
 Call them from Celery tasks directly, or from async code via a threadpool.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from composio_client import APIStatusError
@@ -201,13 +202,27 @@ def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
     return request.redirect_url
 
 
-def ensure_labels(user_id: str) -> list[str]:
+@dataclass(frozen=True)
+class LabelSync:
+    """Outcome of `ensure_labels`: what was created, and every label's id.
+
+    `ids` maps casefolded label name -> Gmail label id, covering both the
+    labels that already existed and the ones just created. Callers that need
+    an id can read it straight off here instead of paying for another
+    LIST_LABELS round trip (~1.2s against Composio).
+    """
+
+    created: list[str]
+    ids: dict[str, str]
+
+
+def ensure_labels(user_id: str) -> LabelSync:
     """
     Ensure InboxPilot's organizational labels exist in the user's Gmail.
 
     Idempotent: lists the account's existing labels and creates only the ones
     that are missing (case-insensitive match, since Gmail rejects duplicate
-    names). Returns the names that were newly created (empty on later runs).
+    names).
 
     Blocking Composio calls — invoke from a Celery task or a threadpool.
     """
@@ -218,26 +233,30 @@ def ensure_labels(user_id: str) -> list[str]:
     if resp.get("successful") is False:
         raise RuntimeError(f"Composio {LIST_LABELS} failed: {resp.get('error')}")
 
-    existing = {
-        label.get("name").casefold() for label in resp.get("data").get("labels")
-    }
+    ids: dict[str, str] = {}
+    for label in resp.get("data").get("labels"):
+        if (lid := label.get("id")) and (lname := (label.get("name") or "").casefold()):
+            ids[lname] = lid
 
     created: list[str] = []
     for name, colors in INBOXPILOT_LABELS.items():
-        if name.casefold() in existing:
+        if name.casefold() in ids:
             continue
-    
+
         res = client.tools.execute(
-            CREATE_LABEL, 
-            {"label_name": name, **colors}, 
+            CREATE_LABEL,
+            {"label_name": name, **colors},
             user_id=user_id
         )
-    
+
         if res.get("successful") is False:
             raise RuntimeError(f"Composio {CREATE_LABEL} failed for {name!r}: {res.get('error')}")
+
+        if new_id := (res.get("data") or {}).get("id"):
+            ids[name.casefold()] = new_id
         created.append(name)
 
-    return created
+    return LabelSync(created=created, ids=ids)
 
 
 def fetch_by_query(

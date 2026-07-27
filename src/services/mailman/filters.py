@@ -64,10 +64,14 @@ def apply_hold_filter(
                 exc_info=True,
             )
 
-    gmail.ensure_labels(user_id)
-    # Label may have just been created; drop stale resolutions for this process.
-    gmail_ops.clear_label_cache()
-    hold_label_id = gmail_ops.resolve_label_id(user_id, gmail_ops.HOLD_LABEL_NAME)
+    # ensure_labels already listed (and created) every label, so it knows the
+    # hold label's id — take it from there rather than spending another
+    # LIST_LABELS round trip on Composio, and warm the shared cache while we
+    # have the authoritative ids in hand.
+    sync = gmail.ensure_labels(user_id)
+    gmail_ops.cache_label_ids(user_id, sync.ids)
+
+    hold_label_id = sync.ids.get(gmail_ops.HOLD_LABEL_NAME.casefold())
     if not hold_label_id:
         raise HoldLabelMissing()
 
