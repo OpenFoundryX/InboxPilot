@@ -5,9 +5,18 @@ module owns the decision-making. That keeps the interesting logic — intent
 routing, event ordering, graceful degradation — unit-testable with nothing but
 fakes.
 
-Two paths. If the message parses as a command, the engine *proposes* the
-actions and stops; execution needs an explicit confirm. Otherwise it retrieves
-context and streams a grounded answer.
+Three paths, chosen by `intent.classify`:
+
+- smalltalk ("who are you?", "what can you do?") — answered from the persona,
+  with no mailbox access and no Gmail connection required.
+- question ("show me my important emails") — retrieve context, stream a
+  grounded answer.
+- command ("archive everything from x@y.com") — *propose* the actions and
+  stop; execution needs an explicit confirm.
+
+Only the command path can raise a confirm card. That distinction is the whole
+point of classifying: a question that came back as a card was a dead end for
+the user, since there was nothing to approve and no answer either.
 """
 
 from collections.abc import AsyncIterator
@@ -18,9 +27,16 @@ from openai import AsyncOpenAI
 from core.config import settings
 from core.logging import get_logger
 from services.chat.describe import describe_actions
+from services.chat.intent import (
+    INTENT_COMMAND,
+    INTENT_QUESTION,
+    INTENT_SMALLTALK,
+    classify,
+)
 from services.chat.sources.base import Excerpt, Retriever
 from services.commands.ask import ANSWER_RULES
 from services.commands.parser import parse_command
+from services.persona import CAPABILITIES
 
 log = get_logger(__name__)
 
@@ -50,9 +66,42 @@ _CHAT_ANSWER_SYS = ANSWER_RULES + (
     "your answer, so keep inline links to the ones you actually reference."
 )
 
+_CHAT_SMALLTALK_SYS = f"""You are InboxOS, the user's email assistant, replying in a live
+web chat. Be warm and brief — two or three sentences, light Markdown, no sign-off, no
+subject line, and no bullet-point dump unless they asked for the full list.
+
+{CAPABILITIES}
+
+You have NOT looked at their mailbox for this reply, so never describe or invent
+anything that is in it — offer to go look instead. If they ask for something you
+cannot do, say so plainly and name the closest thing you can."""
+
 
 def _client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+
+async def _stream_completion(system: str, turns: list[dict], user: str) -> AsyncIterator[str]:
+    stream = await _client().chat.completions.create(
+        model=settings.OPENAI_MODEL,
+        temperature=0.3,
+        messages=[{"role": "system", "content": system}, *turns, {"role": "user", "content": user}],
+        stream=True,
+    )
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+def _replayed(history: list[dict]) -> list[dict]:
+    return [
+        {"role": h["role"], "content": h["content"]}
+        for h in history[-HISTORY_TURNS:]
+        if h.get("content")
+    ]
 
 
 def _excerpts_as_corpus(excerpts: list[Excerpt]) -> str:
@@ -85,29 +134,41 @@ async def stream_answer(
     else:
         context = "\n\n(No relevant emails were found in their inbox.)"
 
-    turns = [
-        {"role": h["role"], "content": h["content"]}
-        for h in history[-HISTORY_TURNS:]
-        if h.get("content")
-    ]
-    messages = [
-        {"role": "system", "content": _CHAT_ANSWER_SYS},
-        *turns,
-        {"role": "user", "content": f"Question: {message}{context}"},
-    ]
-
-    stream = await _client().chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        temperature=0.3,
-        messages=messages,
-        stream=True,
+    stream = _stream_completion(
+        _CHAT_ANSWER_SYS, _replayed(history), f"Question: {message}{context}"
     )
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
+    async for delta in stream:
+        yield delta
+
+
+async def stream_smalltalk(message: str, history: list[dict]) -> AsyncIterator[str]:
+    """Yield deltas for a message about the assistant itself, mailbox untouched."""
+    async for delta in _stream_completion(_CHAT_SMALLTALK_SYS, _replayed(history), message):
+        yield delta
+
+
+async def _intent(user_id: str, message: str, history: list[dict]) -> str:
+    """Classify the message, degrading to the answer path if the router fails.
+
+    A classifier outage must not turn every message into a confirm card, and it
+    must not fail the turn either: `stream_answer` will re-raise a genuine
+    configuration problem (a missing API key) with a friendlier message.
+    """
+    try:
+        intent = await run_in_threadpool(classify, message, history)
+    except Exception:
+        log.warning("chat.classify_failed", user_id=user_id, exc_info=True)
+        return INTENT_QUESTION
+    log.info("chat.intent", user_id=user_id, intent=intent)
+    return intent
+
+
+def _proposal_lead_in(summary: str) -> str:
+    """One line of context above the confirm card."""
+    if not summary:
+        return "Here's what I'll do — approve below and I'll go ahead."
+    summary = summary[0].upper() + summary[1:]
+    return f"{summary.rstrip('.')} — approve below and I'll go ahead."
 
 
 async def turn_events(
@@ -122,17 +183,32 @@ async def turn_events(
     """Drive one turn, yielding (event_name, payload) pairs."""
     yield EV_STAGE, {"label": "Reading your question"}
 
-    # `parse_command` reads a subject line too; chat has none.
-    parsed = await run_in_threadpool(parse_command, None, message, timezone)
-    actions = parsed.get("actions") or []
-    if actions:
-        log.info("chat.actions_proposed", user_id=user_id, count=len(actions))
-        yield EV_ACTIONS, {
-            "actions": describe_actions(actions),
-            "raw": actions,
-            "summary": parsed.get("summary") or "",
-        }
+    intent = await _intent(user_id, message, history)
+
+    if intent == INTENT_SMALLTALK:
+        async for delta in stream_smalltalk(message, history):
+            yield EV_TOKEN, {"text": delta}
         return
+
+    if intent == INTENT_COMMAND:
+        # `parse_command` reads a subject line too; chat has none.
+        parsed = await run_in_threadpool(parse_command, None, message, timezone)
+        actions = parsed.get("actions") or []
+        summary = parsed.get("summary") or ""
+        if actions:
+            log.info("chat.actions_proposed", user_id=user_id, count=len(actions))
+            # A card on its own reads as a demand with no explanation, so say
+            # what is about to happen before asking them to approve it.
+            yield EV_TOKEN, {"text": _proposal_lead_in(summary)}
+            yield EV_ACTIONS, {
+                "actions": describe_actions(actions),
+                "raw": actions,
+                "summary": summary,
+            }
+            return
+        # Classified as a command, but nothing actionable came back. Answering
+        # beats a silent turn, so fall through to the question path.
+        log.info("chat.command_without_actions", user_id=user_id)
 
     if not gmail_connected:
         yield EV_SOURCES, {"sources": []}

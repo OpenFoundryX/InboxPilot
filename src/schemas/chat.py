@@ -3,7 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from services.chat.describe import describe_actions
 
 
 class MessageRead(BaseModel):
@@ -19,6 +21,19 @@ class MessageRead(BaseModel):
     action_status: str
     action_results: list[str] = []
     created_at: datetime
+
+    @field_validator("actions", mode="after")
+    @classmethod
+    def _readable(cls, actions: list[dict]) -> list[dict]:
+        """Serve actions as the confirm card needs them, not as stored.
+
+        The column keeps the raw parser output because that is what
+        `/messages/{id}/confirm` executes. The client renders `label` and
+        `detail`, which only `describe_actions` produces — so a transcript
+        reload used to hand the card `{"type": "catch_up_now"}` and it drew a
+        row of empty labels above an Approve button.
+        """
+        return describe_actions(actions)
 
 
 class ConversationRead(BaseModel):

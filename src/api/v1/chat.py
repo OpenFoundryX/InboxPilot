@@ -51,7 +51,14 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 SSE_HEADERS = {
-    "Cache-Control": "no-cache",
+    # `no-transform` is the part that matters, and it is not decoration: the web
+    # app reaches this endpoint through Next's rewrite proxy, whose compression
+    # middleware gzips anything `text/*`. Nothing in that pipe calls flush(), so
+    # every frame sat in the gzip buffer until the stream closed and the whole
+    # answer landed in the browser at once — streaming that only worked under
+    # curl, which doesn't ask for gzip. `compression` (and nginx) skip a
+    # response marked no-transform, which restores frame-by-frame delivery.
+    "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive",
     # Tells nginx-style proxies not to buffer, which would defeat streaming.
     "X-Accel-Buffering": "no",

@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
