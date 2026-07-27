@@ -1447,6 +1447,7 @@ Extend the imports:
 
 ```python
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import IntegrityError
 
 from integrations.composio import gmail
 from schemas.categorization import CategoryCreate
@@ -1480,6 +1481,18 @@ async def create_category(
         raise HTTPException(422, f"a category with key {key!r} already exists")
     if any(c.gmail_label == gmail_label for c in existing):
         raise HTTPException(422, f"a category already uses the label {gmail_label!r}")
+    # Colliding display names shadow each other in the classifier — mail for the
+    # shadowed category gets permanently mislabelled into the other one.
+    if any(
+        c.display_name.strip().casefold() == payload.display_name.strip().casefold()
+        for c in existing
+    ):
+        raise HTTPException(422, f"a category is already named {payload.display_name.strip()!r}")
+    # casefold() can LENGTHEN a string ('ß' -> 'ss'), so a display_name that
+    # passes max_length=64 can still overflow these String(64) columns. Check
+    # the derived values, and check them before the irreversible Gmail call.
+    if len(gmail_label) > 64 or len(key) > 64:
+        raise HTTPException(422, "display_name is too long once normalised")
 
     try:
         await run_in_threadpool(gmail.create_label, str(user.id), gmail_label)
@@ -1500,7 +1513,13 @@ async def create_category(
         actions=payload.actions.model_dump(),
     )
     db.add(category)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # Lost a concurrent-create race. The Gmail label may already exist;
+        # that is fine, create_label is idempotent by name and the winning
+        # request is correctly linked to it.
+        raise HTTPException(409, "that category was just created by another request") from exc
     return category
 
 
