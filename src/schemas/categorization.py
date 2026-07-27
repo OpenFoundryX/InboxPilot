@@ -52,3 +52,14 @@ class SettingsRead(BaseModel):
 
 class SettingsUpdate(BaseModel):
     is_enabled: bool | None = None
+
+
+class ReclassifyRequest(BaseModel):
+    days: int = Field(default=7, ge=1, le=90)
+    max_results: int | None = Field(default=None, ge=1, le=2000)
+
+
+class ReclassifyResponse(BaseModel):
+    task_id: str
+    days: int
+    max_results: int | None = None

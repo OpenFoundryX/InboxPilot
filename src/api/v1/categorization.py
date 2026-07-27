@@ -5,9 +5,10 @@ categories; the Advanced tab adds custom categories, deterministic rules, and
 tuning knobs.
 """
 
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.deps import DbSession
 from models.categorization import CategorizationSettings, EmailCategory, default_actions
@@ -15,6 +16,8 @@ from models.users import User
 from schemas.categorization import (
     CategoryRead,
     CategoryUpdate,
+    ReclassifyRequest,
+    ReclassifyResponse,
     SettingsRead,
     SettingsUpdate,
 )
@@ -24,6 +27,7 @@ from services.categorization.store import (
     get_or_create_categories,
     get_or_create_settings,
 )
+from workers.jobs.reclassify import reclassify as reclassify_task
 
 router = APIRouter(prefix="/categorization", tags=["categorization"])
 
@@ -73,3 +77,28 @@ async def update_settings(
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
     return row
+
+
+@router.post(
+    "/reclassify",
+    response_model=ReclassifyResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reclassify(
+    payload: ReclassifyRequest, user: CurrentUser, db: DbSession
+) -> ReclassifyResponse:
+    """Queue a re-run of categorization over recent mail.
+
+    Mail that already carries one of the user's category labels is left alone,
+    so this is safe to call repeatedly after taxonomy edits.
+    """
+    settings_row = await get_or_create_settings(db, user.id)
+    if not settings_row.is_enabled:
+        raise HTTPException(409, "categorization is disabled; enable it first")
+
+    task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
+    settings_row.last_reclassify_at = datetime.now(UTC)
+
+    return ReclassifyResponse(
+        task_id=task.id, days=payload.days, max_results=payload.max_results
+    )
