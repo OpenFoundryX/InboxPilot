@@ -669,13 +669,14 @@ Run:
 ```bash
 PYTHONPATH=src uv run python -c "
 from main import app
-routes = sorted(
-    (r.path, ','.join(sorted(m for m in r.methods if m != 'HEAD')))
-    for r in app.routes if 'categorization' in getattr(r, 'path', '')
-)
-for path, methods in routes:
-    print(f'{methods:12} {path}')
-assert len(routes) == 3, routes
+# NOTE: do not scan app.routes — FastAPI 0.139 keeps included routers as lazy
+# _IncludedRouter objects, so a flat scan finds nothing. The OpenAPI schema
+# forces resolution and is the public contract anyway.
+spec = app.openapi()
+found = {p: sorted(m.upper() for m in ops) for p, ops in spec['paths'].items() if 'categorization' in p}
+for path, methods in sorted(found.items()):
+    print(f'{\",\".join(methods):14} {path}')
+assert sum(len(m) for m in found.values()) == 4, found
 "
 ```
 Expected, exactly:
@@ -1261,8 +1262,10 @@ Run:
 ```bash
 PYTHONPATH=src uv run python -c "
 from main import app
-paths = {getattr(r, 'path', '') for r in app.routes}
-assert '/v1/categorization/reclassify' in paths, sorted(p for p in paths if 'categor' in p)
+# app.routes is NOT scannable on FastAPI 0.139 (lazy _IncludedRouter). Use OpenAPI.
+spec = app.openapi()
+assert '/v1/categorization/reclassify' in spec['paths'], sorted(p for p in spec['paths'] if 'categor' in p)
+assert 'post' in spec['paths']['/v1/categorization/reclassify']
 from workers.jobs.reclassify import reclassify
 assert reclassify.name == 'categorization.reclassify', reclassify.name
 from services.categorization.backfill import queue_unlabelled, BACKFILL_CLASSIFY_MAX
@@ -1486,12 +1489,10 @@ for given, want in cases.items():
     assert got == want, f'{given!r} -> {got!r}, wanted {want!r}'
 print('slugify ok')
 from main import app
-methods = {
-    (getattr(r, 'path', ''), m)
-    for r in app.routes for m in getattr(r, 'methods', set())
-}
-assert ('/v1/categorization/categories', 'POST') in methods
-assert ('/v1/categorization/categories/{key}', 'DELETE') in methods
+# app.routes is NOT scannable on FastAPI 0.139 (lazy _IncludedRouter). Use OpenAPI.
+paths = app.openapi()['paths']
+assert 'post' in paths['/v1/categorization/categories'], paths['/v1/categorization/categories']
+assert 'delete' in paths['/v1/categorization/categories/{key}'], paths['/v1/categorization/categories/{key}']
 print('create/delete routes mounted')
 "
 ```
@@ -1737,12 +1738,13 @@ Run:
 ```bash
 PYTHONPATH=src uv run python -c "
 from main import app
-methods = {(getattr(r,'path',''), m) for r in app.routes for m in getattr(r,'methods',set())}
-for want in [('/v1/categorization/rules','GET'), ('/v1/categorization/rules','POST'),
-             ('/v1/categorization/rules/{rule_id}','PATCH'),
-             ('/v1/categorization/rules/{rule_id}','DELETE'),
-             ('/v1/categorization/rules/order','PUT')]:
-    assert want in methods, f'missing {want}'
+# app.routes is NOT scannable on FastAPI 0.139 (lazy _IncludedRouter). Use OpenAPI.
+paths = app.openapi()['paths']
+for path, method in [('/v1/categorization/rules','get'), ('/v1/categorization/rules','post'),
+                     ('/v1/categorization/rules/{rule_id}','patch'),
+                     ('/v1/categorization/rules/{rule_id}','delete'),
+                     ('/v1/categorization/rules/order','put')]:
+    assert method in paths.get(path, {}), f'missing {method.upper()} {path}'
 print('rules routes mounted')
 
 from pydantic import ValidationError
