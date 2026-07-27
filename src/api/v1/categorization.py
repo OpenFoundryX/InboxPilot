@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import DbSession
-from models.categorization import CategorizationSettings, EmailCategory
+from models.categorization import CategorizationSettings, EmailCategory, default_actions
 from models.users import User
 from schemas.categorization import (
     CategoryRead,
@@ -47,7 +47,15 @@ async def update_category(
     if category is None:
         raise HTTPException(404, f"no category with key {key!r}")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "actions" in data:
+        # exclude_unset recurses into nested models, so a partial actions PATCH
+        # (e.g. {"archive": true}) only carries the keys the caller sent. Merge
+        # over the stored value (itself defaulted, in case it's ever missing a
+        # key) instead of assigning outright, or the omitted keys are dropped
+        # from the JSONB column rather than left at their prior value.
+        data["actions"] = {**default_actions(), **(category.actions or {}), **data["actions"]}
+    for field, value in data.items():
         setattr(category, field, value)
     return category
 
