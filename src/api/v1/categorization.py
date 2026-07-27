@@ -67,14 +67,31 @@ async def update_category(
     key: str, payload: CategoryUpdate, user: CurrentUser, db: DbSession
 ) -> EmailCategory:
     # Seed first: a user who PATCHes before ever listing still has a taxonomy.
-    await get_or_create_categories(db, user.id)
+    existing = await get_or_create_categories(db, user.id)
 
     category = await get_category(db, user.id, key)
     if category is None:
         raise HTTPException(404, f"no category with key {key!r}")
 
     data = payload.model_dump(exclude_unset=True)
+
+    if data.get("display_name") is not None:
+        data["display_name"] = data["display_name"].strip()
+        # Same collision guard as create: a display_name that normalizes to
+        # match another category shadows it in the classifier's name->key map
+        # (first-wins), silently misrouting mail forever. Exclude this row
+        # itself so renaming to a case/whitespace variant of its own current
+        # name still works.
+        new_norm = data["display_name"].casefold()
+        if any(
+            c.key != category.key and c.display_name.strip().casefold() == new_norm
+            for c in existing
+        ):
+            raise HTTPException(422, f"a category is already named {data['display_name']!r}")
+
     if "actions" in data:
+        if data["actions"] is None:
+            raise HTTPException(422, "actions cannot be null")
         # exclude_unset recurses into nested models, so a partial actions PATCH
         # (e.g. {"archive": true}) only carries the keys the caller sent. Merge
         # over the stored value (itself defaulted, in case it's ever missing a
@@ -206,10 +223,13 @@ async def create_category(
         await db.flush()
     except IntegrityError as exc:
         # A concurrent request can win the uq_email_categories_user_key race
-        # between our pre-checks and this flush. The Gmail label may already
-        # exist at this point; that's fine — create_label is idempotent by
-        # name, and the winning request's row is the one correctly linked to
-        # it, so nothing is orphaned.
+        # between our pre-checks and this flush. `create_label` is NOT
+        # idempotent (it raises on Gmail's duplicate-name 409 rather than
+        # returning the existing id), so the loser's Gmail label call may
+        # itself have already failed or produced a duplicate label; either
+        # way the loser's row here is discarded and only the winning
+        # request's row remains linked to a label, so nothing is orphaned in
+        # the DB even though a stray duplicate Gmail label can exist.
         raise HTTPException(409, "that category was just created by another request") from exc
     return category
 

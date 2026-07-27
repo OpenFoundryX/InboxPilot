@@ -96,8 +96,11 @@ def classify(
 
     label = parsed.get("label")
     # A malformed confidence must not void an otherwise-valid label: parse it
-    # independently and fall back to 1.0. Nothing consumes confidence until
-    # Task 9, so a wrong-but-harmless default is the safe failure mode.
+    # independently and fall back to a safe default. The pipeline's threshold
+    # check (`verdict.confidence < config.confidence_threshold`) DOES consume
+    # this value, so an unparseable confidence must fail CLOSED (score 0.0)
+    # rather than open — otherwise it would clear every threshold a user sets
+    # and bypass the safety net they configured.
     confidence = _coerce_confidence(parsed.get("confidence"))
 
     # `response_format={"type": "json_object"}` guarantees valid JSON, not a
@@ -139,9 +142,12 @@ def classify(
 
 
 def _coerce_confidence(value: object) -> float:
-    """Coerce the model's confidence to [0, 1]; default 1.0 on anything unusable."""
+    """Coerce the model's confidence to [0, 1]; fail CLOSED (0.0) on anything
+    unusable so a garbled/missing confidence never clears a set threshold."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
     try:
-        conf = float(value) if value is not None else 1.0
+        conf = float(value)
     except (TypeError, ValueError):
-        conf = 1.0
+        return 0.0
     return max(0.0, min(1.0, conf))

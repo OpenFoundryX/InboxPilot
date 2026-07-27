@@ -60,9 +60,21 @@ INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
     **INTERNAL_LABELS,
 }
 
+# Gmail's own system labels. resolve_label_id() casefolds names from
+# LIST_LABELS, and Gmail returns system labels with name == id, so a user
+# category named "inbox" would resolve to the literal INBOX id — putting the
+# same id in both the add and remove lists of a single batchModify.
+GMAIL_SYSTEM_LABEL_NAMES: frozenset[str] = frozenset({
+    "inbox", "spam", "trash", "unread", "starred", "important",
+    "sent", "draft", "chat",
+    "category_personal", "category_social", "category_promotions",
+    "category_updates", "category_forums",
+})
+
 # Names a user may not claim for a custom category.
-RESERVED_LABEL_NAMES: frozenset[str] = frozenset(
-    name.casefold() for name in INBOXPILOT_LABELS
+RESERVED_LABEL_NAMES: frozenset[str] = (
+    frozenset(name.casefold() for name in INBOXPILOT_LABELS)
+    | GMAIL_SYSTEM_LABEL_NAMES
 )
 
 
@@ -79,8 +91,11 @@ def _find_label_id(user_id: str, name: str) -> str | None:
 def create_label(user_id: str, name: str) -> str:
     """Create an arbitrary Gmail label by name; return its id.
 
-    Idempotent-ish: if a label with this name already exists, returns that id
-    instead of failing on Gmail's duplicate-name 409.
+    NOT idempotent: this always attempts creation and raises RuntimeError if
+    Composio reports failure, including Gmail's duplicate-name 409 when a
+    label with this name already exists. Callers that need idempotent
+    create-or-lookup should check first (e.g. `_find_label_id`) or use
+    `ensure_labels`, which does exactly that for InboxPilot's own labels.
     """
 
     resp = get_composio().tools.execute(

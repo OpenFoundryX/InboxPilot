@@ -109,12 +109,10 @@ def categorize_and_apply(
         log.info("categorize.disabled", user_id=user_id, message_id=message_id)
         return None
 
-    enabled = config.enabled()
-    if not enabled:
-        log.info("categorize.no_categories", user_id=user_id, message_id=message_id)
-        return None
-
-    # Deterministic rules first: a match here means no LLM call at all.
+    # Deterministic rules first: a match here means no LLM call at all. An
+    # explicit rule outranks the enable toggle by design, so this must run
+    # even when every category is disabled — only the LLM branch below needs
+    # at least one enabled category to pick from.
     rule = first_match(list(config.rules), sender, subject, snippet)
     if rule is not None:
         if rule.action == RULE_EXCLUDE:
@@ -130,6 +128,11 @@ def categorize_and_apply(
             )
             return None
     else:
+        enabled = config.enabled()
+        if not enabled:
+            log.info("categorize.no_categories", user_id=user_id, message_id=message_id)
+            return None
+
         verdict = classify(
             sender,
             subject,

@@ -110,6 +110,12 @@ def apply_category(
     if actions.get("star"):
         add.append(STARRED_LABEL)
 
+    # Belt-and-braces: a category label can resolve to the same id as one of
+    # the action labels above (e.g. a mis-provisioned/legacy category sharing
+    # a Gmail system label id). A label id must never appear in both lists in
+    # one batchModify, so drop anything in `add` from `remove`.
+    remove = [lid for lid in remove if lid not in add]
+
     _modify(user_id, message_ids, add=add, remove=remove)
 
 
