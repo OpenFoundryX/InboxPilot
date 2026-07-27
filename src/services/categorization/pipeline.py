@@ -159,12 +159,15 @@ def categorize_and_apply(
         if category is None:
             return None
 
-    gmail_ops.add_label(user_id, [message_id], category.gmail_label)
+    gmail_ops.apply_category(
+        user_id, [message_id], category.gmail_label, category.actions
+    )
     log.info(
         "categorize.applied",
         user_id=user_id,
         message_id=message_id,
         category=category.key,
         matched_rule=rule is not None,
+        actions=category.actions,
     )
     return category.key
