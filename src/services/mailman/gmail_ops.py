@@ -83,6 +83,18 @@ def add_label(user_id: str, message_ids: list[str], label_name: str) -> None:
     _modify(user_id, message_ids, add=[label_id], remove=[])
 
 
+def set_inbox_state(user_id: str, message_ids: list[str], *, in_inbox: bool) -> None:
+    """Add or remove INBOX on messages, leaving every other label untouched.
+
+    Used to bring already-classified mail in line after the user flips a
+    category between "keep in my inbox" and "move out of my inbox".
+    """
+    if in_inbox:
+        _modify(user_id, message_ids, add=[INBOX_LABEL], remove=[])
+    else:
+        _modify(user_id, message_ids, add=[], remove=[INBOX_LABEL])
+
+
 def apply_category(
     user_id: str,
     message_ids: list[str],

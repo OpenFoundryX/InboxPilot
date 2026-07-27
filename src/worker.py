@@ -23,6 +23,7 @@ TASK_MODULES = [
     "workers.jobs.reply_draft_job",
     "workers.jobs.sync_last_7_days",
     "workers.jobs.reclassify",
+    "workers.jobs.sync_category_inbox",
     "workers.jobs.mailman_tick",
     "workers.jobs.routines_sweep",
     "workers.jobs.reminders_sweep",

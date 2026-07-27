@@ -50,6 +50,7 @@ from services.categorization.store import (
     slugify,
 )
 from workers.jobs.reclassify import reclassify as reclassify_task
+from workers.jobs.sync_category_inbox import sync_category_inbox
 
 router = APIRouter(prefix="/categorization", tags=["categorization"])
 
@@ -98,8 +99,21 @@ async def update_category(
         # key) instead of assigning outright, or the omitted keys are dropped
         # from the JSONB column rather than left at their prior value.
         data["actions"] = {**default_actions(), **(category.actions or {}), **data["actions"]}
+
+    # The archive flag is normally applied by the classifier as each email is
+    # categorized, so on its own it only affects new mail. Flipping the toggle
+    # means the mailbox, not just future arrivals — so when it actually changes,
+    # sweep the mail already carrying this label onto the right side of the inbox.
+    was_archived = bool((category.actions or {}).get("archive"))
+    now_archived = bool(data.get("actions", category.actions or {}).get("archive"))
+    archive_changed = "actions" in data and was_archived != now_archived
+
     for field, value in data.items():
         setattr(category, field, value)
+
+    if archive_changed:
+        sync_category_inbox.delay(str(user.id), category.gmail_label, now_archived)
+
     return category
 
 
