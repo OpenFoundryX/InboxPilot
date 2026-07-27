@@ -43,6 +43,10 @@ class UserConfig:
     is_enabled: bool
     categories: tuple[CategorySnapshot, ...]
     rules: tuple[RuleSnapshot, ...] = ()
+    fallback_category_key: str | None = None
+    confidence_threshold: float = 0.0
+    model: str | None = None
+    extra_instructions: str | None = None
 
     def enabled(self) -> list[CategorySnapshot]:
         return [c for c in self.categories if c.is_enabled]
@@ -78,6 +82,10 @@ async def load_config(db: AsyncSession, user_id: uuid.UUID) -> UserConfig:
             for r in rule_rows
             if r.is_enabled
         ),
+        fallback_category_key=settings_row.fallback_category_key,
+        confidence_threshold=settings_row.confidence_threshold,
+        model=settings_row.model,
+        extra_instructions=settings_row.extra_instructions,
     )
 
 
@@ -130,10 +138,24 @@ def categorize_and_apply(
                 Category(key=c.key, display_name=c.display_name, description=c.description)
                 for c in enabled
             ],
+            model=config.model,
+            extra_instructions=config.extra_instructions,
         )
-        if verdict.key is None:
+        key = verdict.key
+        if key is None or verdict.confidence < config.confidence_threshold:
+            # Undecided, or the model was not sure enough to be trusted.
+            log.info(
+                "categorize.below_threshold",
+                user_id=user_id,
+                message_id=message_id,
+                key=key,
+                confidence=verdict.confidence,
+                threshold=config.confidence_threshold,
+            )
+            key = config.fallback_category_key
+        if key is None:
             return None
-        category = config.by_key(verdict.key)
+        category = config.by_key(key)
         if category is None:
             return None
 

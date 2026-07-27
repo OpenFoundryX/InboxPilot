@@ -59,11 +59,19 @@ class SettingsRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     is_enabled: bool
+    fallback_category_key: str | None = None
+    confidence_threshold: float = 0.0
+    model: str | None = None
+    extra_instructions: str | None = None
     last_reclassify_at: datetime | None = None
 
 
 class SettingsUpdate(BaseModel):
     is_enabled: bool | None = None
+    fallback_category_key: str | None = None
+    confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    model: str | None = None
+    extra_instructions: str | None = Field(default=None, max_length=2000)
 
 
 class ReclassifyRequest(BaseModel):

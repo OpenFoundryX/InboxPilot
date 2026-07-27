@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
+from core.config import settings as app_settings
 from integrations.composio import gmail
 from models.categorization import (
     RULE_ASSIGN,
@@ -95,7 +96,19 @@ async def update_settings(
     payload: SettingsUpdate, user: CurrentUser, db: DbSession
 ) -> CategorizationSettings:
     row = await get_or_create_settings(db, user.id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+
+    if (model := data.get("model")) is not None:
+        allowed = app_settings.allowed_classifier_models
+        if model not in allowed:
+            raise HTTPException(422, f"model must be one of {sorted(allowed)}")
+
+    if "fallback_category_key" in data and data["fallback_category_key"] is not None:
+        await get_or_create_categories(db, user.id)
+        if await get_category(db, user.id, data["fallback_category_key"]) is None:
+            raise HTTPException(422, f"no category with key {data['fallback_category_key']!r}")
+
+    for field, value in data.items():
         setattr(row, field, value)
     return row
 
