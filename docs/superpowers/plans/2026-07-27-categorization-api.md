@@ -1155,7 +1155,7 @@ def queue_unlabelled(
 
 - [ ] **Step 2: Point `sync_last_7_days` at the shared helper**
 
-In `src/workers/jobs/sync_last_7_days.py`, delete the whole `_queue_backfill_classification` function and the `BACKFILL_CLASSIFY_MAX` constant. That leaves three imports unused — `gmail_ops`, `classify_new_email`, and the `BUILTIN_CATEGORIES` line Task 4 added — so delete all three. Add:
+In `src/workers/jobs/sync_last_7_days.py`, delete the whole `_queue_backfill_classification` function and the `BACKFILL_CLASSIFY_MAX` constant. That leaves `gmail_ops` and `classify_new_email` unused — delete those two imports, but **keep `BUILTIN_CATEGORIES`**, which the fallback below still needs. (`BUILTIN_CATEGORIES` is also imported by `services/persona.py` and `services/commands/parser.py` from Task 4 — run `grep -rn "BUILTIN_CATEGORIES" src/` before deleting anything so you only touch this file.) Add:
 
 ```python
 from services.categorization import backfill
@@ -1171,11 +1171,20 @@ Then replace the call site:
 with:
 
 ```python
-    config = get_config(user_id)
-    queued = backfill.queue_unlabelled(
-        user_id, emails, [c.gmail_label for c in config.categories]
-    )
+    # Degrade rather than die: _install_trigger below is what must not be
+    # missed — without it the user receives no mail at all — and this task has
+    # no autoretry. A DB blip here falls back to the built-in label names,
+    # which is exactly what this code used before Task 5.
+    try:
+        label_names = [c.gmail_label for c in get_config(user_id).categories]
+    except Exception:
+        log.exception("categorization.config_unavailable", user_id=user_id)
+        label_names = [c.gmail_label for c in BUILTIN_CATEGORIES]
+
+    queued = backfill.queue_unlabelled(user_id, emails, label_names)
 ```
+
+Keep the `BUILTIN_CATEGORIES` import for that fallback — it is the one import from Task 4's Step 4 that does not get deleted here.
 
 This is a behaviour improvement, not just a move: onboarding now skips mail carrying any of the user's *actual* labels, including custom ones, rather than only the six built-in names.
 
@@ -1277,8 +1286,11 @@ async def reclassify(
     if not settings_row.is_enabled:
         raise HTTPException(409, "categorization is disabled; enable it first")
 
-    task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
+    # Stamp before enqueueing: the transaction only commits in get_db's
+    # teardown, so if the broker publish fails, .delay() raises and the stamp
+    # rolls back with the request. The two stay consistent.
     settings_row.last_reclassify_at = datetime.now(UTC)
+    task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
 
     return ReclassifyResponse(
         task_id=task.id, days=payload.days, max_results=payload.max_results
