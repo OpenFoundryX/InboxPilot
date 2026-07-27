@@ -1006,9 +1006,30 @@ def classify_and_label(
     )
 ```
 
-- [ ] **Step 4: Fix the one remaining importer of the deleted constant**
+- [ ] **Step 4: Fix every importer of the deleted constant**
 
-`src/workers/jobs/sync_last_7_days.py:14` imports `LABEL_NAMES`, which no longer exists. Task 5 rewrites this function properly; for now, make it import-clean by replacing line 14:
+**Four** modules import `LABEL_NAMES`, which no longer exists. Find them all before editing:
+
+```bash
+grep -rn "LABEL_NAMES" src/
+```
+
+- `src/services/commands/parser.py` — **fix this one first.** It is transitively imported by `main.py` via the chat router, so until it is fixed the whole app fails to start.
+- `src/services/persona.py`
+- `src/services/digest/catchup.py` — the import is dead; just delete the line.
+- `src/workers/jobs/sync_last_7_days.py`
+
+For `parser.py` and `persona.py`, both of which interpolate the names into a prompt string, replace the import with a module-level derivation:
+
+```python
+from models.categorization import BUILTIN_CATEGORIES
+
+_GMAIL_LABELS = [c.gmail_label for c in BUILTIN_CATEGORIES]
+```
+
+and swap `LABEL_NAMES` for `_GMAIL_LABELS` at each use site. This is order-identical to the old constant (`['to do', 'to follow up', 'notification', 'fyi', 'marketing', 'noise']`), so the generated prompts are byte-for-byte unchanged.
+
+For `sync_last_7_days.py`, Task 5 rewrites this function properly; for now make it import-clean by replacing line 14:
 
 ```python
 from models.categorization import BUILTIN_CATEGORIES
