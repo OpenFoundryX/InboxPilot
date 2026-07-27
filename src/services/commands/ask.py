@@ -56,7 +56,7 @@ Example — question "did Pradeep send me the Mahindra users excel sheet?":
   "mahindra filename:xlsx OR mahindra filename:xls"
 ]}"""
 
-_ANSWER_SYS = """You are InboxOS, the user's email assistant. Answer the user's
+ANSWER_RULES = """You are InboxOS, the user's email assistant. Answer the user's
 question directly and concisely, grounded ONLY in the email excerpts provided.
 
 Format the reply in light Markdown for a clean email:
@@ -71,16 +71,19 @@ Attachment awareness: each email shows how many files are attached. Distinguish 
 real attached file from content merely quoted or forwarded inside an email body — if
 a file was expected but the email has no attachment, say so. If the excerpts don't
 contain the answer, say what you found, state plainly what's missing, and suggest a
-concrete next step. Never invent emails, senders, or links.
+concrete next step. Never invent emails, senders, or links."""
 
-End your reply with a sign-off line containing only: — InboxOS"""
+# The email surface signs off; the web chat renders a live transcript and must not.
+_ANSWER_SYS = ANSWER_RULES + (
+    "\n\nEnd your reply with a sign-off line containing only: — InboxOS"
+)
 
 
 def _client() -> OpenAI:
     return OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
-def _plan_queries(subject: str | None, body: str | None) -> list[str]:
+def plan_queries(subject: str | None, body: str | None) -> list[str]:
     content = f"Subject: {subject or ''}\n\n{(body or '')[:1500]}"
     resp = _client().chat.completions.create(
         model=settings.OPENAI_MODEL,
@@ -106,7 +109,9 @@ def _plan_queries(subject: str | None, body: str | None) -> list[str]:
     return out[:_MAX_QUERIES]
 
 
-def _search_all(user_id: str, queries: list[str]) -> list[EmailSummary]:
+def search_all(
+    user_id: str, queries: list[str], per_query: int = _PER_QUERY
+) -> list[EmailSummary]:
     """Run every planned query, merge results, dedupe by message id.
 
     Broad keyword queries would otherwise echo back the user's own self-email
@@ -117,7 +122,7 @@ def _search_all(user_id: str, queries: list[str]) -> list[EmailSummary]:
     for q in queries:
         query = q if "from:" in q.lower() else f"{q} -from:me"
         try:
-            hits = gmail.fetch_by_query(user_id, query, _PER_QUERY)
+            hits = gmail.fetch_by_query(user_id, query, per_query)
         except Exception:
             log.warning("ask.query_failed", user_id=user_id, query=query, exc_info=True)
             continue
@@ -135,21 +140,21 @@ def _search_all(user_id: str, queries: list[str]) -> list[EmailSummary]:
 # `/u/<...>/` slot pins the link to the right account even when several Google
 # accounts are signed into the same browser (bare `u/0` would open the wrong one).
 # The hex thread id from the Gmail API resolves directly in the URL fragment.
-def _thread_link(thread_id: str | None, account_email: str | None) -> str:
+def thread_link(thread_id: str | None, account_email: str | None) -> str:
     if not thread_id:
         return "(no link)"
     slot = account_email or "0"
     return f"https://mail.google.com/mail/u/{slot}/#all/{thread_id}"
 
 
-def _corpus(hits: list[EmailSummary], account_email: str | None) -> str:
+def build_corpus(hits: list[EmailSummary], account_email: str | None) -> str:
     blocks = []
     for h in hits:
         n = len(h.attachments)
         atts = f"{n} file(s)" if n else "none"
         blocks.append(
             f"From: {h.sender}\nDate: {h.date}\nSubject: {h.subject}\n"
-            f"Attachments: {atts}\nLink: {_thread_link(h.thread_id, account_email)}\n"
+            f"Attachments: {atts}\nLink: {thread_link(h.thread_id, account_email)}\n"
             f"{(h.body or h.snippet or '')[:800]}"
         )
     return "\n\n---\n\n".join(blocks)
@@ -166,12 +171,12 @@ def answer_question(
     `account_email` pins the Gmail "View email" links to the right signed-in
     account; when omitted, links fall back to the primary account (`u/0`).
     """
-    queries = _plan_queries(subject, body)
-    hits = _search_all(user_id, queries) if queries else []
+    queries = plan_queries(subject, body)
+    hits = search_all(user_id, queries) if queries else []
 
     user_msg = f"Question:\nSubject: {subject or ''}\n{(body or '')[:1500]}"
     if hits:
-        user_msg += f"\n\nRelevant emails from their inbox:\n{_corpus(hits, account_email)}"
+        user_msg += f"\n\nRelevant emails from their inbox:\n{build_corpus(hits, account_email)}"
     else:
         user_msg += "\n\n(No relevant emails were found in their inbox.)"
 

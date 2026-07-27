@@ -15,6 +15,7 @@ dependencies = [
     "celery[redis]>=5.4",
     "redis>=5.2",
     "composio>=0.7",
+    "openai>=1.54",
     "httpx>=0.28",
     "google-auth[requests]>=2.35",
     "python-jose[cryptography]>=3.3",
