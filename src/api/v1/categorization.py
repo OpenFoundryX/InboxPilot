@@ -10,6 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import IntegrityError
 
 from api.deps import DbSession
 from integrations.composio import gmail
@@ -131,6 +132,12 @@ async def create_category(
     key = slugify(payload.display_name)
     if not key:
         raise HTTPException(422, "display_name must contain at least one letter or digit")
+    # casefold() can *lengthen* a string (e.g. 'ß' -> 'ss'), so a display_name
+    # that fits Pydantic's max_length=64 on the input can still overflow the
+    # String(64) columns once normalised. Check the derived values themselves,
+    # not the input length, and do it before the irreversible Gmail call.
+    if len(gmail_label) > 64 or len(key) > 64:
+        raise HTTPException(422, "display_name is too long once normalised")
     if gmail_label in gmail.RESERVED_LABEL_NAMES:
         raise HTTPException(422, f"{payload.display_name!r} is a reserved label name")
     if any(c.key == key for c in existing):
@@ -167,7 +174,15 @@ async def create_category(
         actions=payload.actions.model_dump(),
     )
     db.add(category)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # A concurrent request can win the uq_email_categories_user_key race
+        # between our pre-checks and this flush. The Gmail label may already
+        # exist at this point; that's fine — create_label is idempotent by
+        # name, and the winning request's row is the one correctly linked to
+        # it, so nothing is orphaned.
+        raise HTTPException(409, "that category was just created by another request") from exc
     return category
 
 
