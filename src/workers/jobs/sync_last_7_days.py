@@ -10,6 +10,7 @@ is cheap.
 from core.logging import get_logger
 from integrations.composio import gmail
 from integrations.composio.triggers import ensure_gmail_new_message_trigger
+from models.categorization import BUILTIN_CATEGORIES
 from services.categorization import backfill
 from services.categorization.pipeline import get_config
 from workers.celery_app import celery_app
@@ -32,10 +33,18 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
         log.exception("gmail.ensure_labels_failed", user_id=user_id)
 
     emails = gmail.fetch_recent_emails(user_id, days=days, max_results=max_results)
-    config = get_config(user_id)
-    queued = backfill.queue_unlabelled(
-        user_id, emails, [c.gmail_label for c in config.categories]
-    )
+
+    # get_config is a DB round trip and, unlike ensure_labels above, has no
+    # autoretry. A transient DB error here must not abort the task before
+    # _install_trigger() runs below — missing the trigger means the user gets
+    # no mail at all, which is worse than falling back to the built-in labels.
+    try:
+        label_names = [c.gmail_label for c in get_config(user_id).categories]
+    except Exception:
+        log.exception("categorization.config_unavailable", user_id=user_id)
+        label_names = [c.gmail_label for c in BUILTIN_CATEGORIES]
+
+    queued = backfill.queue_unlabelled(user_id, emails, label_names)
     trigger_id, trigger_error = _install_trigger(user_id)
 
     log.info(

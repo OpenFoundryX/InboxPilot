@@ -96,8 +96,12 @@ async def reclassify(
     if not settings_row.is_enabled:
         raise HTTPException(409, "categorization is disabled; enable it first")
 
-    task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
+    # Stamp before enqueueing: if the broker publish in `.delay()` raises, the
+    # request unwinds and the stamp rolls back with it, so the two stay
+    # consistent. `task.id` is safe either way — Celery generates it
+    # client-side before publishing.
     settings_row.last_reclassify_at = datetime.now(UTC)
+    task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
 
     return ReclassifyResponse(
         task_id=task.id, days=payload.days, max_results=payload.max_results
