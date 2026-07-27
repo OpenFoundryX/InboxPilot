@@ -592,7 +592,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import DbSession
-from models.categorization import CategorizationSettings, EmailCategory
+from models.categorization import CategorizationSettings, EmailCategory, default_actions
 from models.users import User
 from schemas.categorization import (
     CategoryRead,
@@ -629,7 +629,15 @@ async def update_category(
     if category is None:
         raise HTTPException(404, f"no category with key {key!r}")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "actions" in data:
+        # exclude_unset recurses into nested models, so a one-checkbox PATCH
+        # arrives as {"archive": True} and a plain assignment would wipe the
+        # other two flags. Merge over default_actions() so a row that is
+        # already missing keys self-heals.
+        data["actions"] = {**default_actions(), **(category.actions or {}), **data["actions"]}
+
+    for field, value in data.items():
         setattr(category, field, value)
     return category
 
@@ -649,7 +657,7 @@ async def update_settings(
     return row
 ```
 
-Note `payload.model_dump()` flattens the nested `CategoryActions` to a plain dict, which is exactly what the `JSONB` column wants — no conversion needed.
+`payload.model_dump()` flattens the nested `CategoryActions` to a plain dict, which is what the `JSONB` column wants. But note the merge above: `exclude_unset=True` recurses, so a nested model is dumped with only the keys the client actually sent. Assigning that dict straight to the column is data loss, not a partial update.
 
 - [ ] **Step 3: Register the router in `src/api/router.py`**
 
