@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from models.categorization import RULE_EXCLUDE
+from services.activity.record import record_email_categorized
 from services.categorization.rules import RuleSnapshot, first_match
 from services.categorization.store import (
     get_or_create_categories,
@@ -165,6 +166,9 @@ def categorize_and_apply(
     gmail_ops.apply_category(
         user_id, [message_id], category.gmail_label, category.actions
     )
+    # After the label lands, never before: a Gmail failure raises above this
+    # line, so a message we failed to label is never counted as categorized.
+    record_email_categorized(user_id, message_id, category.key)
     log.info(
         "categorize.applied",
         user_id=user_id,

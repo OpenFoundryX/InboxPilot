@@ -15,6 +15,7 @@ from core.config import settings
 from core.logging import get_logger
 from integrations.composio import calendar, gmail
 from models.mailman import VipRule
+from services.activity.record import record_draft_created
 from services.mailman import gmail_ops
 from services.mailman.rules import extract_address
 
@@ -73,7 +74,7 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
             continue
 
         requester = extract_address(e.sender) or ""
-        body = f"Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n" + calendar.format_slots(slots) + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
+        body = "Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n" + calendar.format_slots(slots) + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
         subject = f"Re: {e.subject or 'Meeting'}"
         try:
             gmail.create_draft(user_id, requester, subject, body, thread_id=e.thread_id)
@@ -81,6 +82,9 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
         except Exception:
             log.exception("scheduling.draft_failed", message_id=e.id)
             continue
+        # Keyed by the source message, not the draft id: one email replied to
+        # counts once, even if a re-run leaves a second draft object behind.
+        record_draft_created(user_id, e.id)
         drafted += 1
         log.info("scheduling.drafted", user_id=user_id, requester=requester)
     return drafted
