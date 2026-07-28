@@ -151,10 +151,24 @@ classifies the last 30 days on its own.
 - Resume always lands on step 2 rather than tracking per-step progress. Steps
   pre-fill from the API, so re-answering costs one click each and we avoid a
   second source of truth for where the user got to.
-- `lib/auth.ts` — remove `isOnboarded`, `setOnboarded`, `resetOnboarding`, and
-  the `inboxos_inbox_pref` key. The flag is real now. `signIn`/`signOut`/
-  `isAuthed` stay for the no-backend mock path.
+- `lib/auth.ts` — remove `resetOnboarding` and the `inboxos_inbox_pref` key.
+  `isOnboarded`/`setOnboarded` stay: with no backend configured there is no
+  `onboarded_at` to read, so the mock path still needs a local flag or the
+  dashboard becomes unreachable. `signIn`/`signOut`/`isAuthed` stay for the same
+  reason.
 - New `lib/onboarding.ts` — `completeOnboarding()` wrapping the new endpoint.
+
+### No-backend mock path
+
+`backendConfigured()` is false when `NEXT_PUBLIC_API_URL` is unset, and then the
+`/api` rewrite in `next.config.mjs` does not exist, so every `apiFetch` fails.
+The deleted mock pages existed to give that path something to render.
+
+The new steps cover it the way the rest of the app already does: each step falls
+back to the `DEFAULT_SETTINGS` its `lib/` module already exports when the initial
+GET fails, and Continue skips the write when `backendConfigured()` is false.
+Finish calls `completeOnboarding()` when configured and `setOnboarded()` when
+not. No mock-only pages remain.
 
 ## Errors
 
@@ -169,25 +183,31 @@ hiccup is worse than an unbatched inbox they can fix from `/dashboard/mailman`.
 A failed `POST /onboarding/complete` keeps the user on step 4 with a retry — it
 is the one call that must land, or they re-enter the wizard on next login.
 
-## Testing
+## Verification
 
-Backend:
+Neither repo has test infrastructure today — `inboxos-web` has no test runner and
+`InboxPilot` has pytest configured with no `tests/` directory. Adding one is out
+of scope for this change, so verification is static checks plus a manual walk.
 
-- `POST /users/me/onboarding/complete` sets `onboarded_at` when null.
-- Calling it twice leaves the first timestamp unchanged.
-- It requires auth (401 without a session).
-- `GET /auth/me` includes `onboarded_at`.
-- Migration upgrade backfills existing rows to a non-null value.
+Backend: `uv run ruff check src`, `uv run mypy src`, `make migrate` (then a
+manual `alembic downgrade -1` / `upgrade head` round trip), and curling
+`POST /v1/users/me/onboarding/complete` twice to confirm the timestamp does not
+move on the second call.
 
-Frontend:
+Frontend: `npx tsc --noEmit`, `npm run lint`, `npm run build`.
 
-- Each step maps its selected choice to the documented request body.
-- Skip advances without issuing a settings write.
-- Finish calls `mailman/start` only when a batching choice was made, and always
-  calls `onboarding/complete`.
-- A `mailman/start` failure still routes to `/dashboard`.
-- `checkAccess` gating: unauthed → login, authed but unconnected → connect,
-  connected but not onboarded → step 2, onboarded → dashboard.
+Manual walk, against a running backend, with a user whose `onboarded_at` has been
+set back to NULL:
+
+1. `/dashboard` bounces to `/onboarding/connect`.
+2. Connect both accounts; Continue lands on `/onboarding/mail`.
+3. Each step's choice persists — reload mid-wizard and the selection is still
+   there.
+4. Skip on a step leaves that feature's settings untouched.
+5. Finish reaches `/dashboard`; `GET /v1/auth/me` shows `onboarded_at` set and
+   `GET /v1/mailman/settings` shows `is_active: true` unless "keep mail arriving
+   live" was chosen.
+6. Revisiting `/onboarding/mail` after finishing redirects to `/dashboard`.
 
 ## Out of scope
 
