@@ -6,6 +6,7 @@ router in this codebase.
 
 import uuid
 from datetime import datetime, time, timedelta, timezone
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from fastapi.concurrency import run_in_threadpool
@@ -51,6 +52,18 @@ BOT_OFF_STATUSES = frozenset({STATUS_CANCELLED, STATUS_FAILED})
 BOT_LOCKED_STATUSES = frozenset(
     {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
 )
+
+
+class _MeetingRef(NamedTuple):
+    """Just enough of a Meeting row to derive bot state — not the ORM object.
+
+    `load_agenda` projects only these columns so a dashboard load never drags
+    a user's entire meeting history (transcripts, summaries, JSONB blobs)
+    into the identity map to build a dict matching ~2 days of events.
+    """
+
+    id: uuid.UUID
+    status: str
 
 
 def first_name(user: User) -> str:
@@ -109,17 +122,25 @@ def day_bounds(tz_name: str, now: datetime | None = None) -> tuple[datetime, dat
 
 
 def bot_flags(
-    meeting: Meeting | None, starts_at: datetime, has_link: bool, now: datetime
+    status: str | None, starts_at: datetime, has_link: bool, now: datetime
 ) -> tuple[bool, bool]:
-    """(bot_on, bot_editable) for one agenda row."""
-    bot_on = meeting is not None and meeting.status not in BOT_OFF_STATUSES
+    """(bot_on, bot_editable) for one agenda row.
+
+    `status` is the booked Meeting's status, or None if no Meeting row exists
+    for this event.
+    """
+    bot_on = status is not None and status not in BOT_OFF_STATUSES
 
     if not has_link:
-        # Part of the user's day, but there is nothing for a bot to join.
-        return False, False
+        # Nothing for a bot to join from this page — never offer a toggle.
+        # Still report bot_on honestly: if a bot was booked before the
+        # organiser stripped the link, it is still scheduled to dial the
+        # stored URL, and hiding that here would make an active booking
+        # invisible (and unrevocable from this page).
+        return bot_on, False
     if starts_at <= now:
         return bot_on, False
-    if meeting is not None and meeting.status in BOT_LOCKED_STATUSES:
+    if status is not None and status in BOT_LOCKED_STATUSES:
         return bot_on, False
     return bot_on, True
 
@@ -138,6 +159,30 @@ async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> Das
     now = datetime.now(timezone.utc)
     today_start, tomorrow_start, day_after_start = day_bounds(tz_name, now)
 
+    # Bounded to the window and projected to only the columns used below, so a
+    # dashboard load never pulls a user's entire meeting history (transcripts,
+    # summaries, JSONB columns) just to build a dict matching ~2 days of
+    # events. Done before the calendar call — not after — so the DB work
+    # (including get_or_create_settings' possible first-load INSERT in
+    # build_summary) never spans the blocking Composio round trip below.
+    #
+    # Trade-off: a Meeting whose stored starts_at is stale relative to a moved
+    # calendar event falls outside this window and renders as "no booking".
+    # upsert_from_event refreshes starts_at from the event on every sweep run,
+    # so in practice rows track the event's current time.
+    rows = await db.execute(
+        select(Meeting.calendar_event_id, Meeting.id, Meeting.status).where(
+            Meeting.user_id == user_id,
+            Meeting.calendar_event_id.is_not(None),
+            Meeting.starts_at >= today_start,
+            Meeting.starts_at < day_after_start,
+        )
+    )
+    by_event: dict[str, _MeetingRef] = {
+        calendar_event_id: _MeetingRef(id=meeting_id, status=status)
+        for calendar_event_id, meeting_id, status in rows.all()
+    }
+
     try:
         events = await run_in_threadpool(
             calendar.list_events, str(user_id), today_start, day_after_start
@@ -145,9 +190,6 @@ async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> Das
     except Exception:
         log.exception("dashboard.calendar_unavailable", user_id=str(user_id))
         return DashboardMeetings(timezone=tz_name, today=[], tomorrow=[])
-
-    rows = await db.scalars(select(Meeting).where(Meeting.user_id == user_id))
-    by_event = {m.calendar_event_id: m for m in rows if m.calendar_event_id}
 
     today: list[AgendaItem] = []
     tomorrow: list[AgendaItem] = []
@@ -160,13 +202,15 @@ async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> Das
             continue
         starts_at, ends_at = bounds
 
-        meeting = by_event.get(str(event_id))
+        meeting_ref = by_event.get(str(event_id))
         link = link_from_event(event)
-        bot_on, bot_editable = bot_flags(meeting, starts_at, link is not None, now)
+        bot_on, bot_editable = bot_flags(
+            meeting_ref.status if meeting_ref else None, starts_at, link is not None, now
+        )
 
         item = AgendaItem(
             calendar_event_id=str(event_id),
-            meeting_id=meeting.id if meeting else None,
+            meeting_id=meeting_ref.id if meeting_ref else None,
             title=event.get("summary"),
             starts_at=starts_at,
             ends_at=ends_at,
