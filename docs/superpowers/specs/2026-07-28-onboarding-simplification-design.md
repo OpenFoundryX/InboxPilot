@@ -81,7 +81,7 @@ Heading: "Choose what stays in your inbox" (the copy from the deleted mock
 
 | Choice | Writes |
 | --- | --- |
-| Only what needs my attention (preselected until the saved state is read) | `PUT /categorization/settings {is_enabled: true}`; `PATCH /categories/{key} {is_enabled: true}` for `to_do`, `to_follow_up`, `fyi`, `notification`; `PATCH {is_enabled: true, actions: {archive: true}}` for `marketing`, `noise` |
+| Only what needs my attention (preselected on a first visit) | `PUT /categorization/settings {is_enabled: true}`; `PATCH /categories/{key} {is_enabled: true}` for `to_do`, `to_follow_up`, `fyi`, `notification`; `PATCH {is_enabled: true, actions: {archive: true}}` for `marketing`, `noise` |
 | All my emails | `is_enabled: true`; all six builtins enabled, no archive action |
 | Don't label my emails | `PUT /categorization/settings {is_enabled: false}` |
 
@@ -123,14 +123,23 @@ every answer is recoverable from a settings row:
   there before and can never reproduce that answer. The key is written on
   Continue and on Skip, cleared once `POST /onboarding/complete` succeeds, and
   cleared by `signOut()` — it must not outlive the wizard or the session.
-- **Step 3** reads both `GET /categorization/settings` (`is_enabled: false` is
-  "Don't label my emails") and `GET /categorization/categories`, where
-  `marketing.actions.archive` is the only thing separating "Only what needs my
-  attention" from "All my emails" — both enable all six labels. One consequence:
-  a freshly seeded taxonomy is byte-identical to what "All my emails" writes, so
-  on an account that has never answered, the step settles on "All my emails"
-  once the read lands. That is an accurate picture of the account's current
-  state, and it is the option that changes nothing.
+- **Step 3** works the same way, for the same reason: it reads
+  `inboxos_categories_choice` from `localStorage` first and only falls back to
+  the API. The fallback reads both `GET /categorization/settings`
+  (`is_enabled: false` is "Don't label my emails") and
+  `GET /categorization/categories`, where `marketing.actions.archive` is the
+  only thing separating "Only what needs my attention" from "All my emails" —
+  both enable all six labels. The API alone cannot say "not answered yet": a
+  freshly seeded taxonomy is byte-identical to what "All my emails" writes, and
+  this step's own `GET /categories` is what seeds it, so a first-time visitor
+  would otherwise be moved off the preselected "Only what needs my attention"
+  onto "All my emails" by their own prefill — and Continue would then leave
+  `marketing` and `noise` in the inbox, against the option's stated promise.
+  The key has the same lifecycle as step 2's: written on Continue and on Skip,
+  cleared on completion and on `signOut()`.
+  The prefill also never overwrites a click. The options are live while the read
+  is in flight (it includes a six-row INSERT on a new account), so the step
+  tracks whether the user has picked and drops the fetched value if they have.
 - **Step 4** reads `GET /v1/meetings/settings` — `enabled` and `auto_join`
   distinguish all three answers.
 
@@ -181,11 +190,15 @@ classifies the last 30 days on its own.
 - Resume always lands on step 2 rather than tracking per-step progress. Steps
   pre-fill from the API, so re-answering costs one click each and we avoid a
   second source of truth for where the user got to.
-- `lib/auth.ts` — remove `resetOnboarding` and the `inboxos_inbox_pref` key.
-  `isOnboarded`/`setOnboarded` stay: with no backend configured there is no
-  `onboarded_at` to read, so the mock path still needs a local flag or the
-  dashboard becomes unreachable. `signIn`/`signOut`/`isAuthed` stay for the same
-  reason.
+- `lib/auth.ts` — remove the `inboxos_inbox_pref` key, which belonged to the
+  deleted mock inbox step. `isOnboarded`/`setOnboarded` stay: with no backend
+  configured there is no `onboarded_at` to read, so the mock path still needs a
+  local flag or the dashboard becomes unreachable. `signIn`/`signOut`/`isAuthed`
+  stay for the same reason, and so does `resetOnboarding` — the settings page's
+  "replay onboarding" action calls it (`app/dashboard/settings/page.tsx:15`).
+  It clears only the local flag, so with a backend configured the server-side
+  `onboarded_at` still governs.
+  `auth.ts` also holds the two wizard-answer keys, so `signOut()` clears them.
 - New `lib/onboarding.ts` — `completeOnboarding()` wrapping the new endpoint.
 
 ### No-backend mock path
