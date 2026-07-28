@@ -16,16 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.logging import get_logger
 from integrations.composio import calendar
 from models.activity import KIND_DRAFT_CREATED, KIND_EMAIL_CATEGORIZED, ActivityEvent
-from models.meetings import (
-    STATUS_CANCELLED,
-    STATUS_DELIVERED,
-    STATUS_ENDED,
-    STATUS_FAILED,
-    STATUS_PROCESSED,
-    STATUS_RECORDED,
-    STATUS_RECORDING,
-    Meeting,
-)
+from models.meetings import BOT_LOCKED_STATUSES, BOT_OFF_STATUSES, Meeting
 from models.users import User
 from schemas.dashboard import (
     AgendaItem,
@@ -43,15 +34,6 @@ log = get_logger(__name__)
 
 SETUP_SYNCING = "syncing"
 SETUP_READY = "ready"
-
-# No bot is attending: either none was ever booked, or the booking is gone.
-BOT_OFF_STATUSES = frozenset({STATUS_CANCELLED, STATUS_FAILED})
-
-# The call has started or finished — nothing left to toggle. Mirrors the 409
-# condition in POST /v1/meetings/bot; the two must be kept in step.
-BOT_LOCKED_STATUSES = frozenset(
-    {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
-)
 
 
 class _MeetingRef(NamedTuple):
