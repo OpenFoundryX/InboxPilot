@@ -26,5 +26,9 @@ class User(UUIDMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Set once, when the user finishes the onboarding wizard. NULL means the
+    # wizard is unfinished — the frontend uses it to gate the dashboard.
+    onboarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     def __repr__(self) -> str:
         return f"<User {self.email}>"
