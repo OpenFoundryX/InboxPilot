@@ -1,6 +1,7 @@
 """Meeting notetaker API — history, ad-hoc joins, and per-user rules."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,10 +10,12 @@ from sqlalchemy import select
 
 from api.deps import DbSession
 from core.logging import get_logger
+from integrations.composio import calendar
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
 from models.meetings import (
     ACTIVE_STATUSES,
+    BOT_LOCKED_STATUSES,
     SOURCE_ADHOC,
     STATUS_CANCELLED,
     STATUS_PENDING,
@@ -21,6 +24,7 @@ from models.meetings import (
 )
 from models.users import User
 from schemas.meetings import (
+    EnableBotRequest,
     JoinRequest,
     MeetingDetail,
     MeetingRead,
@@ -28,8 +32,8 @@ from schemas.meetings import (
     SettingsUpdate,
 )
 from services.auth.dependencies import get_current_user
-from services.meetings.links import find_meeting_link
-from services.meetings.store import get_or_create_settings
+from services.meetings.links import find_meeting_link, link_from_event
+from services.meetings.store import get_or_create_settings, upsert_from_event
 from workers.jobs.meetings_sweep import join_now
 
 log = get_logger(__name__)
@@ -39,6 +43,8 @@ router = APIRouter(prefix="/meetings", tags=["meetings"])
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 LIST_LIMIT = 50
+# How far ahead to look for the event, matching meetings_sweep's horizon.
+EVENT_LOOKUP_HOURS = 48
 
 
 @router.get("/settings", response_model=SettingsRead)
@@ -104,6 +110,49 @@ async def join_meeting(payload: JoinRequest, user: CurrentUser, db: DbSession) -
 @router.get("/{meeting_id}", response_model=MeetingDetail)
 async def get_meeting(meeting_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Meeting:
     return await _owned(db, meeting_id, user.id)
+
+
+@router.post("/bot", response_model=MeetingRead, status_code=status.HTTP_202_ACCEPTED)
+async def enable_bot(payload: EnableBotRequest, user: CurrentUser, db: DbSession) -> Meeting:
+    """Turn the notetaker on for a calendar event.
+
+    One path covers both "never booked" and "previously cancelled": the row is
+    upserted from the calendar event either way. Its counterpart is
+    DELETE /meetings/{id}/bot, which already handles turning it off.
+    """
+    settings_row = await get_or_create_settings(db, user.id)
+    if not settings_row.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The notetaker is disabled")
+
+    now = datetime.now(timezone.utc)
+    events = await run_in_threadpool(
+        calendar.list_events, str(user.id), now, now + timedelta(hours=EVENT_LOOKUP_HOURS)
+    )
+    event = next((e for e in events if str(e.get("id")) == payload.calendar_event_id), None)
+    if event is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "That event is not on your calendar")
+
+    if not link_from_event(event):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "That event has no Zoom, Google Meet, or Teams link to join",
+        )
+
+    meeting, _ = await upsert_from_event(db, user.id, event)
+    if meeting.status in BOT_LOCKED_STATUSES:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Too late: meeting is {meeting.status}"
+        )
+    if meeting.starts_at and meeting.starts_at <= now:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That meeting has already started")
+
+    meeting.status = STATUS_PENDING
+    meeting.status_detail = None
+    await db.flush()
+
+    join_now.delay(str(meeting.id))
+    log.info("meetings.bot_enabled", user_id=str(user.id), meeting_id=str(meeting.id))
+    return meeting
 
 
 @router.delete("/{meeting_id}/bot", response_model=MeetingRead)

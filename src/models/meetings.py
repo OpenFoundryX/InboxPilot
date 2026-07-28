@@ -39,6 +39,17 @@ STATUS_CANCELLED = "cancelled"
 # Statuses where a bot is outstanding and the meeting may still produce output.
 ACTIVE_STATUSES = (STATUS_SCHEDULED, STATUS_JOINING, STATUS_RECORDING, STATUS_ENDED)
 
+# No bot is attending: either none was ever booked, or the booking is gone.
+# Consumed by the dashboard summary (bot_on) and POST /v1/meetings/bot.
+BOT_OFF_STATUSES = frozenset({STATUS_CANCELLED, STATUS_FAILED})
+
+# The call has started or finished — nothing left to toggle. Consumed by both
+# the dashboard summary's bot_editable flag and POST /v1/meetings/bot's 409
+# guard, so the two can never drift out of step: one definition, two readers.
+BOT_LOCKED_STATUSES = frozenset(
+    {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
+)
+
 PLATFORM_MEET = "google_meet"
 PLATFORM_ZOOM = "zoom"
 PLATFORM_TEAMS = "teams"

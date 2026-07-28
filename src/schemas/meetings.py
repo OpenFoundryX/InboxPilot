@@ -48,6 +48,16 @@ class JoinRequest(BaseModel):
     title: str | None = None
 
 
+class EnableBotRequest(BaseModel):
+    """Turn the notetaker on for an event already on the user's calendar.
+
+    Covers both "never booked" and "booked then cancelled" — the calendar event
+    is the stable identifier, since the Meeting row may not exist yet.
+    """
+
+    calendar_event_id: str = Field(min_length=1)
+
+
 class SettingsRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
