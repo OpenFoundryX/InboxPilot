@@ -24,6 +24,7 @@ def classify_new_email(
     sender: str | None = None,
     subject: str | None = None,
     snippet: str | None = None,
+    thread_id: str | None = None,
 ) -> dict:
     label = classify_and_label(
         user_id,
@@ -31,5 +32,6 @@ def classify_new_email(
         sender=sender,
         subject=subject,
         snippet=snippet,
+        thread_id=thread_id,
     )
     return {"user_id": user_id, "message_id": message_id, "label": label}

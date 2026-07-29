@@ -115,6 +115,7 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         sender=data.get("sender"),
         subject=data.get("subject"),
         snippet=_snippet(data),
+        thread_id=data.get("thread_id"),
     )
 
     log.info("composio.webhook_classify", user_id=user_id, message_id=message_id)

@@ -37,8 +37,13 @@ def classify_and_label(
     sender: str | None,
     subject: str | None,
     snippet: str | None,
+    thread_id: str | None = None,
 ) -> str | None:
-    """Label one message. Returns the category key applied, or None."""
+    """Label one message. Returns the category key applied, or None.
+
+    `thread_id` scopes the label to the whole conversation, which is what keeps
+    a thread showing exactly one category — see `gmail_ops.apply_category`.
+    """
     _ensure_labels_once(user_id)
     return pipeline.categorize_and_apply(
         user_id,
@@ -46,4 +51,5 @@ def classify_and_label(
         sender=sender,
         subject=subject,
         snippet=snippet,
+        thread_id=thread_id,
     )

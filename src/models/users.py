@@ -15,23 +15,15 @@ class User(UUIDMixin, TimestampMixin, Base):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     picture: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
-    # Nullable: OAuth-only users (e.g. Google via Composio) have no password.
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Provider subject ids ("sub" claim). Natural key for each provider login.
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     outlook_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # Set once, when the user finishes the onboarding wizard. NULL means the
-    # wizard is unfinished — the frontend uses it to gate the dashboard.
     onboarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # Stamped by `jobs.sync_last_7_days` when onboarding finishes. The dashboard
-    # reads it as the sole signal separating "still setting up" from "ready".
     initial_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:

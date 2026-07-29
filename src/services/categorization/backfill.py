@@ -42,6 +42,7 @@ def queue_unlabelled(
             sender=email.sender,
             subject=email.subject,
             snippet=email.snippet,
+            thread_id=email.thread_id,
         )
         queued += 1
     return queued

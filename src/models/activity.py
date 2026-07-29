@@ -1,4 +1,5 @@
-"""Append-only record of what InboxPilot did for a user.
+"""
+Append-only record of what InboxPilot did for a user.
 
 One row per thing worth counting on the dashboard: a message labelled, a reply
 drafted. Append-only on purpose — the dashboard reads aggregates today, but a
@@ -33,9 +34,7 @@ class ActivityEvent(UUIDMixin, TimestampMixin, Base):
         UniqueConstraint("user_id", "kind", "ref_id", name="uq_activity_events_user_kind_ref"),
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
 
     # The Gmail id that makes this event unique: the categorized message for
@@ -52,9 +51,7 @@ class ActivityEvent(UUIDMixin, TimestampMixin, Base):
     # would be a lie.
     category_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
-    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
 
     def __repr__(self) -> str:
         return f"<ActivityEvent {self.kind} {self.ref_id}>"

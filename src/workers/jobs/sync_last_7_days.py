@@ -39,10 +39,6 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
 
     emails = gmail.fetch_recent_emails(user_id, days=days, max_results=max_results)
 
-    # get_config is a DB round trip and, unlike ensure_labels above, has no
-    # autoretry. A transient DB error here must not abort the task before
-    # _install_trigger() runs below — missing the trigger means the user gets
-    # no mail at all, which is worse than falling back to the built-in labels.
     try:
         label_names = [c.gmail_label for c in get_config(user_id).categories]
     except Exception:
@@ -53,13 +49,8 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
     trigger_id, trigger_error = _install_trigger(user_id)
     _stamp_initial_sync(user_id)
 
-    log.info(
-        "gmail.sync_last_7_days",
-        user_id=user_id,
-        days=days,
-        count=len(emails),
-        classified=queued,
-    )
+    log.info("gmail.sync_last_7_days", user_id=user_id, days=days, count=len(emails), classified=queued)
+
     return {
         "user_id": user_id,
         "count": len(emails),

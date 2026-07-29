@@ -9,6 +9,7 @@ from integrations.composio.composio_client import get_composio
 from integrations.composio.gmail import FETCH_EMAILS, LIST_LABELS
 
 BATCH_MODIFY = "GMAIL_BATCH_MODIFY_MESSAGES"
+MODIFY_THREAD = "GMAIL_MODIFY_THREAD_LABELS"
 INBOX_LABEL = "INBOX"
 UNREAD_LABEL = "UNREAD"
 STARRED_LABEL = "STARRED"
@@ -75,6 +76,23 @@ def _modify(user_id: str, message_ids: list[str], add: list[str], remove: list[s
         raise RuntimeError(f"Composio {BATCH_MODIFY} failed: {resp.get('error')}")
 
 
+def _modify_thread(user_id: str, thread_id: str, add: list[str], remove: list[str]) -> None:
+    """Apply one add/remove label set to every message in a thread, in one call.
+
+    Gmail shows a conversation's labels as the union of its messages', so a
+    per-message modify cannot make a thread carry exactly one category label —
+    an older message in the same thread keeps whatever it was given. This is the
+    thread-level equivalent of `_modify`, and costs the same single round trip.
+    """
+    resp = get_composio().tools.execute(
+        MODIFY_THREAD,
+        {"thread_id": thread_id, "add_label_ids": add, "remove_label_ids": remove},
+        user_id=user_id,
+    )
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {MODIFY_THREAD} failed: {resp.get('error')}")
+
+
 def add_label(user_id: str, message_ids: list[str], label_name: str) -> None:
     """Apply a label (by name) to messages, resolving its id first."""
     label_id = resolve_label_id(user_id, label_name)
@@ -100,6 +118,9 @@ def apply_category(
     message_ids: list[str],
     label_name: str,
     actions: dict[str, bool] | None = None,
+    *,
+    taxonomy_labels: list[str] | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """Apply a category label and its side effects in one Composio round trip.
 
@@ -107,6 +128,17 @@ def apply_category(
     `models.categorization.CATEGORY_ACTIONS`). Batching them with the label is
     the point: four separate calls per message would quadruple the Gmail cost of
     classification.
+
+    A category is *exclusive*: pass `taxonomy_labels` (every label in the user's
+    taxonomy) and every one of them except the winner is removed in the same
+    call. Without it, a message categorized twice — a webhook racing the
+    onboarding backfill, a retry after a taxonomy edit — accumulates one label
+    per run, because a bare add never clears the previous verdict.
+
+    `thread_id` moves the whole operation to thread level, which is what makes
+    the rule visible: Gmail renders a conversation's labels as the union of its
+    messages', so leaving an older message in the thread labelled would still
+    look multi-labelled in the UI.
     """
     label_id = resolve_label_id(user_id, label_name)
     if not label_id:
@@ -122,13 +154,24 @@ def apply_category(
     if actions.get("star"):
         add.append(STARRED_LABEL)
 
+    # Every other category in the taxonomy comes off. Names that do not resolve
+    # are skipped rather than fatal: a category whose Gmail label was never
+    # provisioned (or was deleted in Gmail) cannot be on the message anyway, and
+    # must not stop the one label we came here to apply.
+    for name in taxonomy_labels or []:
+        if (lid := resolve_label_id(user_id, name)) and lid != label_id:
+            remove.append(lid)
+
     # Belt-and-braces: a category label can resolve to the same id as one of
     # the action labels above (e.g. a mis-provisioned/legacy category sharing
     # a Gmail system label id). A label id must never appear in both lists in
     # one batchModify, so drop anything in `add` from `remove`.
     remove = [lid for lid in remove if lid not in add]
 
-    _modify(user_id, message_ids, add=add, remove=remove)
+    if thread_id:
+        _modify_thread(user_id, thread_id, add=add, remove=remove)
+    else:
+        _modify(user_id, message_ids, add=add, remove=remove)
 
 
 def remove_labels(user_id: str, message_ids: list[str], label_names: list[str]) -> None:

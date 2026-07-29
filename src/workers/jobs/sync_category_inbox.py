@@ -16,10 +16,8 @@ from workers.celery_app import celery_app
 
 log = get_logger(__name__)
 
-# Ceiling on one sweep. A mailbox with more than this in a single category is
-# unusual; the rest gets picked up next time the toggle is flipped.
+
 SYNC_MAX = 500
-# Composio rejects very large batchModify payloads, so move in chunks.
 CHUNK = 100
 
 
