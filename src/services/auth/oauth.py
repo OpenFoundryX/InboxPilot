@@ -11,8 +11,10 @@ from models.users import User
 
 
 async def upsert_user_from_google(db: AsyncSession, profile: dict) -> User:
+
     user = await db.scalar(select(User).where(User.google_sub == profile["sub"]))
     now = datetime.now(timezone.utc)
+
     if user is None:  # ← signup
         user = User(
             google_sub=profile["sub"],
@@ -22,13 +24,16 @@ async def upsert_user_from_google(db: AsyncSession, profile: dict) -> User:
             last_login_at=now,
         )
         db.add(user)
+
     else:
         user.email = profile["email"]
         user.full_name = profile.get("name")
         user.picture = profile.get("picture")
         user.last_login_at = now
+
     await db.commit()
     await db.refresh(user)
+
     return user
 
 
@@ -39,8 +44,7 @@ async def issue_tokens(db: AsyncSession, user: User) -> tuple[str, str]:
         RefreshToken(
             user_id=user.id,
             token_hash=refresh_hash,
-            expires_at=datetime.now(timezone.utc)
-            + timedelta(days=settings.REFRESH_TOKEN_TTL_DAYS),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_TTL_DAYS),
         )
     )
     await db.commit()

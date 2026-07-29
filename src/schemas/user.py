@@ -15,3 +15,4 @@ class UserRead(BaseModel):
     picture: str | None = None
     is_active: bool
     last_login_at: datetime | None = None
+    onboarded_at: datetime | None = None

@@ -6,6 +6,7 @@ from core.config import settings
 
 
 def create_access_token(user_id: str) -> str:
+
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
@@ -13,6 +14,7 @@ def create_access_token(user_id: str) -> str:
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_TTL_MIN),
         "type": "access",
     }
+
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
