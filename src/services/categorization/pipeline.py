@@ -103,6 +103,7 @@ def categorize_and_apply(
     sender: str | None,
     subject: str | None,
     snippet: str | None,
+    thread_id: str | None = None,
 ) -> str | None:
     """Categorize one message and apply the result. Returns the key, or None."""
     config = get_config(user_id)
@@ -163,8 +164,18 @@ def categorize_and_apply(
         if category is None:
             return None
 
+    # One category per thread, always. The full taxonomy goes down so every
+    # other category label comes off in the same call as the winner is added —
+    # `category.actions` and the exclusivity share one Gmail round trip.
+    # Disabled categories are included on purpose: a message labelled before its
+    # category was switched off is still wearing that label today.
     gmail_ops.apply_category(
-        user_id, [message_id], category.gmail_label, category.actions
+        user_id,
+        [message_id],
+        category.gmail_label,
+        category.actions,
+        taxonomy_labels=[c.gmail_label for c in config.categories],
+        thread_id=thread_id,
     )
     # After the label lands, never before: a Gmail failure raises above this
     # line, so a message we failed to label is never counted as categorized.
