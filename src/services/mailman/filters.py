@@ -18,6 +18,7 @@ log = get_logger(__name__)
 
 CREATE_FILTER = "GMAIL_CREATE_FILTER"
 DELETE_FILTER = "GMAIL_DELETE_FILTER"
+LIST_FILTERS = "GMAIL_LIST_FILTERS"
 
 # Matches everything the user *receives* (i.e. not sent by them). Gmail filters
 # need at least one criteria field; this is our catch-all.
@@ -123,12 +124,69 @@ def create_hold_filter(
         CREATE_FILTER, {"criteria": criteria, "action": action}, user_id=user_id
     )
     if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {CREATE_FILTER} failed: {resp.get('error')}")
+        error = resp.get("error")
+        if not _is_already_exists(error):
+            raise RuntimeError(f"Composio {CREATE_FILTER} failed: {error}")
+
+        # Gmail refuses a byte-identical filter instead of returning the one it
+        # already has. We land here whenever the stored id has drifted from
+        # reality — the delete above failed, or the settings row was reset while
+        # the filter survived in Gmail. Returning None is not an option: the
+        # caller persists this id, and without it /mailman/stop could never
+        # remove the filter, leaving mail skipping the inbox forever. So adopt
+        # the live filter instead, which also repairs the stored id.
+        #
+        # Gmail only raises this when criteria *and* action both match, so the
+        # filter we find is the one we were about to create — the VIP rules in
+        # it are the ones the caller just asked for, not stale ones.
+        existing = find_hold_filter(user_id, hold_label_id, criteria)
+        if existing is None:
+            raise RuntimeError(
+                f"Composio {CREATE_FILTER} reported the filter already exists, "
+                f"but no live filter matches it: {error}"
+            )
+        log.info("mailman.hold_filter_adopted", user_id=user_id, filter_id=existing)
+        return existing
 
     data = resp.get("data") or {}
     filter_id = data.get("id") or (data.get("response_data") or {}).get("id")
     log.info("mailman.hold_filter_created", user_id=user_id, filter_id=filter_id)
     return filter_id
+
+
+def _is_already_exists(error: object) -> bool:
+    """True for Gmail's 400 FAILED_PRECONDITION "Filter already exists".
+
+    Composio hands the error back as the raw Google error dict rather than a
+    typed failure, so matching on its text is the only handle we have.
+    """
+    lowered = str(error or "").casefold()
+    return "already exists" in lowered or "failed_precondition" in lowered
+
+
+def find_hold_filter(user_id: str, hold_label_id: str, criteria: dict) -> str | None:
+    """Find the live hold filter matching `criteria`; return its id, or None."""
+    resp = get_composio().tools.execute(LIST_FILTERS, {}, user_id=user_id)
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {LIST_FILTERS} failed: {resp.get('error')}")
+
+    data = resp.get("data") or {}
+    # Gmail names the array "filter", singular, and Composio sometimes nests
+    # the payload a level deeper.
+    rows = data.get("filter") or (data.get("response_data") or {}).get("filter") or []
+
+    for row in rows:
+        act = row.get("action") or {}
+        if hold_label_id not in (act.get("addLabelIds") or []):
+            continue
+        if "INBOX" not in (act.get("removeLabelIds") or []):
+            continue
+        live = row.get("criteria") or {}
+        if live.get("query") == criteria.get("query") and live.get(
+            "negatedQuery"
+        ) == criteria.get("negatedQuery"):
+            return row.get("id")
+    return None
 
 
 def delete_filter(user_id: str, filter_id: str) -> None:
