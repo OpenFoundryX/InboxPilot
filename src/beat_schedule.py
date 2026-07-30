@@ -32,6 +32,21 @@ beat_schedule: dict = {
         "task": "meetings.sweep",
         "schedule": 60.0,
     },
+    # Catch-up drafting for mail the arrival job missed. Every 5 minutes rather
+    # than every minute: the task itself only acts on users whose own 15-minute
+    # window is up, and each pass costs Gmail queries plus LLM calls, so a
+    # tighter beat would just be idle wake-ups.
+    "drafts-sweep": {
+        "task": "drafts.sweep",
+        "schedule": 300.0,
+    },
+    # Follow-up nudges for threads that went quiet. Hourly beat, daily per-user
+    # gate — an hourly tick means a user who enables follow-ups does not wait up
+    # to a day for the first one.
+    "drafts-follow-up": {
+        "task": "drafts.follow_up",
+        "schedule": 3600.0,
+    },
 }
 
 __all__ = ["beat_schedule", "crontab"]

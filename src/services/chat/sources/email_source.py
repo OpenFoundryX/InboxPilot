@@ -27,20 +27,29 @@ class EmailRetriever:
         # accounts share a browser.
         self.account_email = account_email
 
-    async def retrieve(
-        self, user_id: str, question: str, history: list[dict]
-    ) -> list[Excerpt]:
-        # Question first: `ask.plan_queries` head-slices its input to 1500
-        # chars, and the preamble alone can run to several hundred — putting
-        # the live question last risked slicing it off entirely.
+    async def retrieve(self, user_id: str, question: str, history: list[dict]) -> list[Excerpt]:
+
         body = f"Current question: {question}\n\n{history_preamble(history)}"
         queries = await run_in_threadpool(ask.plan_queries, None, body)
         if not queries:
-            log.info("chat.no_queries_planned", user_id=user_id)
+            # Planner decided the question needs no mailbox search (greeting,
+            # small-talk leaked past intent, etc.) — chat still answers, just
+            # with an empty corpus.
+            log.info(
+                "chat.no_queries_planned",
+                user_id=user_id,
+                question=(question or "")[:200],
+            )
             return []
 
         hits = await run_in_threadpool(ask.search_all, user_id, queries, PER_QUERY)
-        log.info("chat.retrieved", user_id=user_id, queries=queries, hits=len(hits))
+        log.info(
+            "chat.retrieved",
+            user_id=user_id,
+            queries=queries,
+            hits=len(hits),
+            question=(question or "")[:200],
+        )
         return [self._excerpt(h) for h in hits]
 
     def _excerpt(self, hit: EmailSummary) -> Excerpt:

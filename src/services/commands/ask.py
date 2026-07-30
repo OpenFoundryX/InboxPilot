@@ -8,6 +8,7 @@ including who sent what and which files were truly attached vs. only quoted in a
 """
 
 import json
+import re
 
 from openai import OpenAI
 
@@ -23,6 +24,22 @@ _MAX_QUERIES = 5
 _MAX_SOURCES = 12
 _PER_QUERY = 6
 
+# Browse-style asks the planner sometimes marks needs_search=false when it
+# doesn't know a keyword strategy. These still need the mailbox.
+_MAILBOX_BROWSE = re.compile(
+    r"\b(show|find|list|see|any|what(?:'s| is| are)?|which|summar|"
+    r"catch\s*me\s*up|inbox|email|mail|unread|important|starred)\b",
+    re.I,
+)
+
+# Safe default when the planner refuses a browse question about "important".
+_IMPORTANT_FALLBACK = [
+    'label:"to do" newer_than:30d',
+    'label:"to follow up" newer_than:30d',
+    "is:important newer_than:30d",
+    'label:"fyi" newer_than:30d',
+]
+
 _PLAN_SYS = """You plan Gmail searches to answer a question about the user's mailbox.
 A single query misses things, so return 3-5 COMPLEMENTARY queries that cast a wide
 net from different angles — graduated from narrow to broad:
@@ -32,19 +49,32 @@ net from different angles — graduated from narrow to broad:
 3. broad keywords across the mailbox e.g.  mahindra users list
 4. keywords + file type              e.g.  mahindra filename:xlsx OR mahindra filename:xls
 
+This mailbox is classified into InboxOS labels. Prefer those when the question is
+about a category or "important" mail:
+- "to do" — needs action/reply
+- "to follow up" — waiting on someone / chase
+- "fyi" — relevant, no action
+- "notification" — receipts, alerts, system mail
+- "marketing" / "noise" — promos and clutter (usually exclude these from "important")
+
+Operators you may use: from: to: is:unread is:starred is:important has:attachment
+filename:EXT newer_than:Nd older_than:Nd label:"name" OR "phrase".
+
 Rules:
 - Prefer BARE keywords over subject:. `subject:` matches only the subject line and
   misses matches in the body — use it rarely.
 - Do NOT stack many narrow operators in one query (e.g. subject: AND filename: AND
   has:attachment together) — that finds nothing. Keep each query lean.
-- Always include at least one BROAD keyword-only query over the whole mailbox.
+- For keyword/sender hunts, always include at least one BROAD keyword-only query.
+- For browse/list questions ("show me…", "what's in…", "any…", "catch me up"),
+  prefer label:/is: operators over bare keywords — do NOT invent fake keywords.
 - Use the person's name or email as from: when the question names a sender.
 - Ignore the email's own Subject line; base the searches on the QUESTION itself.
   Only use the Subject if the body has no question.
-- Use operators: from: to: has:attachment filename:EXT newer_than:Nd OR "phrase".
-
-If the question can't be answered from email (greeting, small-talk, a note with no
-request), set needs_search=false.
+- needs_search=true whenever the user wants to READ, FIND, SHOW, LIST, COUNT, or
+  SUMMARISE mail — including "show me my important emails", "what's in my inbox",
+  "any invoices?", "catch me up". Only set needs_search=false for pure greetings
+  or small-talk with no mailbox request.
 
 Return ONLY JSON: {"needs_search": true|false, "queries": ["query1", "query2", ...]}
 
@@ -54,6 +84,14 @@ Example — question "did Pradeep send me the Mahindra users excel sheet?":
   "from:pradeep mahindra has:attachment",
   "mahindra users list",
   "mahindra filename:xlsx OR mahindra filename:xls"
+]}
+
+Example — question "Show me my important emails":
+{"needs_search": true, "queries": [
+  "label:\"to do\" newer_than:30d",
+  "label:\"to follow up\" newer_than:30d",
+  "is:important newer_than:30d",
+  "label:\"fyi\" newer_than:30d"
 ]}"""
 
 ANSWER_RULES = """You are InboxOS, the user's email assistant. Answer the user's
@@ -100,19 +138,42 @@ def plan_queries(subject: str | None, body: str | None) -> list[str]:
             {"role": "user", "content": content},
         ],
     )
+    raw = resp.choices[0].message.content or "{}"
     try:
-        data = json.loads(resp.choices[0].message.content or "{}")
+        data = json.loads(raw)
     except json.JSONDecodeError:
+        log.warning("ask.plan_bad_json", raw=raw[:500])
         return []
-    if not data.get("needs_search"):
-        return []
+    needs_search = bool(data.get("needs_search"))
     queries = data.get("queries") or []
     out: list[str] = []
-    for q in queries:
-        q = (q or "").strip() if isinstance(q, str) else ""
-        if q and q not in out:
-            out.append(q)
-    return out[:_MAX_QUERIES]
+    if needs_search:
+        for q in queries:
+            q = (q or "").strip() if isinstance(q, str) else ""
+            if q and q not in out:
+                out.append(q)
+        out = out[:_MAX_QUERIES]
+    elif _MAILBOX_BROWSE.search(content):
+        # Model said no search for an obvious mailbox browse — don't strand
+        # the answer with an empty corpus. Prefer important-mail defaults when
+        # the ask mentions importance; otherwise a recent-inbox net.
+        if re.search(r"\bimportant\b", content, re.I):
+            out = list(_IMPORTANT_FALLBACK)
+        else:
+            out = ["in:inbox newer_than:14d", "is:unread newer_than:14d"]
+        log.warning(
+            "ask.plan_forced_search",
+            reason="browse_without_search",
+            queries=out,
+        )
+    log.info(
+        "ask.plan",
+        needs_search=needs_search or bool(out),
+        query_count=len(out),
+        queries=out,
+        raw_query_count=len(queries) if isinstance(queries, list) else 0,
+    )
+    return out
 
 
 def search_all(
@@ -132,6 +193,12 @@ def search_all(
         except Exception:
             log.warning("ask.query_failed", user_id=user_id, query=query, exc_info=True)
             continue
+        log.info(
+            "ask.query_hits",
+            user_id=user_id,
+            query=query,
+            hits=len(hits),
+        )
         for h in hits:
             if h.id and h.id not in by_id:
                 by_id[h.id] = h
@@ -139,6 +206,7 @@ def search_all(
                 break
         if len(by_id) >= _MAX_SOURCES:
             break
+    log.info("ask.search_done", user_id=user_id, unique_hits=len(by_id), queries=len(queries))
     return list(by_id.values())
 
 

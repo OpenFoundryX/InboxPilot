@@ -116,6 +116,11 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         subject=data.get("subject"),
         snippet=_snippet(data),
         thread_id=data.get("thread_id"),
+        # Passed through for auto-drafting, which chains off classification. The
+        # classifier keeps using the truncated preview above; a draft has to see
+        # the whole message, and carrying it here is what saves the draft job a
+        # round trip back to Gmail for a body we already hold.
+        body=data.get("message_text"),
     )
 
     log.info("composio.webhook_classify", user_id=user_id, message_id=message_id)
