@@ -29,12 +29,20 @@ class MeetingRead(BaseModel):
     decisions: list[str] = []
     action_items: list[ActionItem] = []
     recap_sent_at: datetime | None = None
+    # Whether a video exists. Free to compute, unlike the link itself, so the
+    # list can offer "watch" without a provider call per row.
+    has_recording: bool = False
 
 
 class MeetingDetail(MeetingRead):
-    """Adds the transcript, which is too large to return in a list."""
+    """Adds the transcript and a live video link, both too costly for a list."""
 
     transcript: str | None = None
+    # A presigned provider link, resolved fresh when this is served. Treat it as
+    # good for this page view only — it expires within hours, so it must not be
+    # persisted or emailed by clients.
+    recording_url: str | None = None
+    recording_url_expires_at: datetime | None = None
 
 
 class JoinRequest(BaseModel):

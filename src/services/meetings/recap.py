@@ -5,6 +5,7 @@ deliberately not attached — it can be thousands of lines, and it is one API ca
 away for anyone who wants it.
 """
 
+from core.config import settings
 from models.meetings import Meeting
 
 MAX_SUBJECT = 120
@@ -40,6 +41,17 @@ def compose_recap(meeting: Meeting) -> tuple[str, str]:
             tail = f" ({' — '.join(suffix)})" if suffix else ""
             lines.append(f"  • {item.get('what')}{tail}")
 
+    if meeting.has_recording:
+        # Deliberately our page, not the provider's download link: that link is
+        # signed for a few hours and this email outlives it by years. The page
+        # resolves a live one whenever it is opened.
+        lines.append("")
+        lines.append(f"▶ Watch the recording: {_meeting_link(meeting)}")
+
     lines.append("")
     lines.append("— InboxOS")
     return subject, "\n".join(lines)
+
+
+def _meeting_link(meeting: Meeting) -> str:
+    return f"{settings.FRONTEND_BASE_URL.rstrip('/')}/dashboard/notetaker/{meeting.id}"

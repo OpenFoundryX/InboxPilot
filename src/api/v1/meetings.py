@@ -33,6 +33,7 @@ from schemas.meetings import (
 )
 from services.auth.dependencies import get_current_user
 from services.meetings.links import find_meeting_link, link_from_event
+from services.meetings.recording import resolve_recording_url
 from services.meetings.store import get_or_create_settings, upsert_from_event
 from workers.jobs.meetings_sweep import join_now
 
@@ -109,7 +110,16 @@ async def join_meeting(payload: JoinRequest, user: CurrentUser, db: DbSession) -
 
 @router.get("/{meeting_id}", response_model=MeetingDetail)
 async def get_meeting(meeting_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Meeting:
-    return await _owned(db, meeting_id, user.id)
+    """One meeting, with a video link that works right now.
+
+    The link is resolved on read rather than served from storage because the
+    provider signs it for a few hours — a stored one is a link that works in
+    testing and is dead by the time a user clicks it. Resolving costs a provider
+    call at most once per meeting per expiry window; the rest are cache hits.
+    """
+    meeting = await _owned(db, meeting_id, user.id)
+    await resolve_recording_url(db, meeting)
+    return meeting
 
 
 @router.post("/bot", response_model=MeetingRead, status_code=status.HTTP_202_ACCEPTED)
