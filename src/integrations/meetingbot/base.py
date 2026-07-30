@@ -57,6 +57,21 @@ class WebhookEvent:
 
 
 @dataclass(frozen=True)
+class RecordingMedia:
+    """A pointer to the finished video, never the video itself.
+
+    Vendors hand out short-lived signed links rather than permanent ones, so
+    `expires_at` is part of the value: whoever caches `video_url` without it has
+    cached a link that will quietly stop working. `recording_id` is the durable
+    handle — the thing to keep, and to re-resolve a fresh link from.
+    """
+
+    video_url: str | None = None
+    recording_id: str | None = None
+    expires_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class TranscriptSegment:
     """One speaker's continuous run of speech."""
 
@@ -106,6 +121,15 @@ class MeetingBotProvider(Protocol):
 
     def fetch_transcript(self, bot_id: str) -> Transcript:
         """The finished transcript. Only meaningful once the bot is `done`."""
+
+    def fetch_recording(self, bot_id: str) -> RecordingMedia:
+        """A link to the video recording. Only meaningful once the bot is `done`.
+
+        A bot with no video yields an empty `RecordingMedia` rather than an
+        error: audio-only calls and recordings still being assembled are normal,
+        and the caller shows what it has. Raises only when the provider itself
+        cannot be reached.
+        """
 
     def parse_webhook(self, body: bytes, headers) -> WebhookEvent:
         """Verify and normalize a status callback. Raises on a bad signature."""

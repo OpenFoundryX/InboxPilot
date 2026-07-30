@@ -50,6 +50,11 @@ BOT_LOCKED_STATUSES = frozenset(
     {STATUS_RECORDING, STATUS_ENDED, STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED}
 )
 
+# The provider has finished assembling media, so asking it for a recording can
+# actually return one. `ended` is deliberately excluded: the bot has left but the
+# recording isn't cut yet, and asking early just buys a wasted call per page view.
+MEDIA_READY_STATUSES = frozenset({STATUS_RECORDED, STATUS_PROCESSED, STATUS_DELIVERED})
+
 PLATFORM_MEET = "google_meet"
 PLATFORM_ZOOM = "zoom"
 PLATFORM_TEAMS = "teams"
@@ -80,11 +85,29 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     recording_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # A link to the video, never the video. Providers sign these links for a few
+    # hours, so this pair is a cache that knows its own deadline — the durable
+    # handle is `recording_id`, which a fresh link is re-resolved from. Storing
+    # only the URL would leave us serving links that died overnight.
+    recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recording_url_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     decisions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     action_items: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     recap_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def has_recording(self) -> bool:
+        """Whether a video exists, answerable without calling the provider.
+
+        That is the whole point: the list badges rows for free, and only the
+        detail view pays for a live link.
+        """
+        return bool(self.recording_id or self.recording_url)
 
 
 class MeetingSettings(UUIDMixin, TimestampMixin, Base):

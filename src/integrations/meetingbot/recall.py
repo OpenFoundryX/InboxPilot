@@ -14,9 +14,10 @@ import hashlib
 import hmac
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -31,6 +32,7 @@ from integrations.meetingbot.base import (
     BotHandle,
     BotState,
     MeetingBotError,
+    RecordingMedia,
     Transcript,
     TranscriptSegment,
     WebhookEvent,
@@ -61,6 +63,17 @@ _ALREADY_OVER = re.compile(
     r"cannot_command_unstarted_bot|has not been started|bot_not_in_call|already.*(left|ended)",
     re.I,
 )
+
+#: Recall exposes finished media under the recording's `media_shortcuts`.
+#: `video_mixed` is the single mp4 of the whole call — what a person means by
+#: "the recording". The per-participant tracks exist for media pipelines, not
+#: for someone who wants to rewatch the meeting.
+_VIDEO_SHORTCUT = "video_mixed"
+
+#: Assumed lifetime for a link whose signature we could not read. Recall signs
+#: for several hours; guessing short costs one extra refresh, guessing long
+#: hands out dead links.
+_ASSUMED_URL_TTL = timedelta(hours=1)
 
 _ID_HEADERS = ("webhook-id", "svix-id")
 _TIMESTAMP_HEADERS = ("webhook-timestamp", "svix-timestamp")
@@ -188,6 +201,30 @@ class RecallProvider:
 
         return Transcript(segments=_parse_segments(raw))
 
+    def fetch_recording(self, bot_id: str) -> RecordingMedia:
+        """Resolve a playable link to the call's video from the bot detail.
+
+        Same `media_shortcuts` pattern as the transcript, but the link is never
+        followed here: the video stays with Recall, and only its URL travels.
+        """
+        data = _request("GET", f"/api/v1/bot/{bot_id}/")
+        recording = _first_recording(data)
+        recording_id = str(recording["id"]) if recording.get("id") else None
+
+        url = _dig(recording, "media_shortcuts", _VIDEO_SHORTCUT, "data", "download_url")
+        if not url:
+            # No video yet, or none at all: an audio-only bot, or a recording
+            # Recall is still assembling. Both are ordinary — report the absence
+            # and keep the recording id, which is what a later retry needs.
+            log.info("recall.no_video", bot_id=bot_id, recording_id=recording_id)
+            return RecordingMedia(recording_id=recording_id)
+
+        return RecordingMedia(
+            video_url=str(url),
+            recording_id=recording_id,
+            expires_at=_presigned_expiry(str(url)),
+        )
+
     def parse_webhook(self, body: bytes, headers) -> WebhookEvent:
         _verify_signature(body, headers)
 
@@ -216,6 +253,39 @@ class RecallProvider:
 def _first_recording(bot: dict) -> dict:
     recordings = bot.get("recordings") or []
     return recordings[0] if recordings else {}
+
+
+def _dig(node: Any, *keys: str) -> Any:
+    """Walk a nested dict, treating a null link as absent rather than as a dict.
+
+    Recall spells "this media does not exist" as a null `media_shortcuts` entry
+    instead of omitting the key, which a chain of `.get(k, {})` would trip over.
+    """
+    for key in keys:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _presigned_expiry(url: str) -> datetime:
+    """When an S3 presigned link stops working, read off the link itself.
+
+    SigV4 carries the signing time and lifetime in the query string, so the URL
+    states its own deadline. Trusting that beats a constant of ours, which would
+    be silently wrong the day Recall changes how long it signs for.
+    """
+    fallback = datetime.now(timezone.utc) + _ASSUMED_URL_TTL
+    params = parse_qs(urlparse(url).query)
+    signed_at = (params.get("X-Amz-Date") or [""])[0]
+    lifetime = (params.get("X-Amz-Expires") or [""])[0]
+    if not (signed_at and lifetime):
+        return fallback
+    try:
+        start = datetime.strptime(signed_at, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return start + timedelta(seconds=int(lifetime))
+    except ValueError:
+        return fallback
 
 
 def _parse_segments(raw: Any) -> list[TranscriptSegment]:

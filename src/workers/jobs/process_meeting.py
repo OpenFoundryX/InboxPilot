@@ -21,6 +21,7 @@ from models.meetings import (
 from models.reminders import ORIGIN_MEETING, Reminder
 from models.users import User
 from services.meetings.recap import compose_recap
+from services.meetings.recording import resolve_recording_url
 from services.meetings.store import get_or_create_settings
 from services.meetings.summarize import summarize
 from services.notify import send_to_inbox
@@ -53,6 +54,11 @@ async def _process(db, meeting_id: str) -> dict:
         return {"skipped": "already delivered"}
     if not meeting.bot_id:
         return {"skipped": "no bot"}
+
+    # Claim the video first, before the transcript can end this run early: a
+    # call where nobody spoke still produced a recording worth watching. It
+    # swallows its own provider errors, so this line can never cost the recap.
+    await resolve_recording_url(db, meeting)
 
     if not meeting.transcript:
         transcript = get_provider().fetch_transcript(meeting.bot_id)
