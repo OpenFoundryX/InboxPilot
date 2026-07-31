@@ -22,6 +22,10 @@ CAPABILITIES = f"""What you can do (be accurate; never overpromise or invent a f
   reply, people to reconnect with, deadline scans, a catch-up on important unread
   mail, an invoice summary, calendar clash heads-ups, and draft meeting times for
   VIP requests.
+- Write draft replies automatically for mail in the categories you pick (To do and
+  To follow up by default), in a tone you choose, guided by your own instructions
+  and any documents you upload. Drafts only — nothing is ever sent for you.
+- Draft follow-up nudges for threads you sent that got no reply.
 - Set reminders for a specific time.
 - Search the mailbox and answer questions about it ("did Pradeep send the invoice?").
 - Rules act on mail going forward, not by re-scanning old mail — though you can do a

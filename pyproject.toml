@@ -21,6 +21,12 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
     "structlog>=24.4",
+    # Text extraction for draft instruction/knowledge uploads. Only the text is
+    # kept, so these run once per upload and never at drafting time.
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+    # Multipart form parsing for those uploads — FastAPI needs it for UploadFile.
+    "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]

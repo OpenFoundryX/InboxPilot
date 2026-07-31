@@ -13,6 +13,7 @@ from workers.celery_app import celery_app
 # worker tasks.
 from models import auth as _auth_models  # noqa: F401,E402
 from models import categorization as _categorization_models  # noqa: F401,E402
+from models import drafts as _drafts_models  # noqa: F401,E402
 from models import mailman as _mailman_models  # noqa: F401,E402
 from models import meetings as _meetings_models  # noqa: F401,E402
 from models import users as _users_models  # noqa: F401,E402
@@ -21,6 +22,7 @@ TASK_MODULES = [
     "workers.jobs.classify_new_email",
     "workers.jobs.handle_command_email",
     "workers.jobs.reply_draft_job",
+    "workers.jobs.drafts_sweep",
     "workers.jobs.sync_last_7_days",
     "workers.jobs.reclassify",
     "workers.jobs.sync_category_inbox",

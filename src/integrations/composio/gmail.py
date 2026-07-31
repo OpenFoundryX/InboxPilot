@@ -33,6 +33,12 @@ SEND_EMAIL = "GMAIL_SEND_EMAIL"
 REPLY_TO_THREAD = "GMAIL_REPLY_TO_THREAD"
 CREATE_DRAFT = "GMAIL_CREATE_EMAIL_DRAFT"
 
+# Marks a message InboxOS has already drafted a reply for. Nothing about drafts
+# is stored in our database, so this label IS the deduplication record: the draft
+# sweeps exclude it, which is what stops them re-drafting the same email on every
+# pass. Same approach as `inboxos-later` in `services.digest.scheduling`.
+DRAFTED_LABEL = "inboxos-drafted"
+
 # Per-request page size. Full bodies (verbose=true) easily hit Composio's 413.
 FETCH_PAGE = 25
 # Hard ceiling when fetching "all" so a huge mailbox can't run forever.
@@ -45,6 +51,7 @@ INTERNAL_LABELS: dict[str, dict[str, str]] = {
     "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
     "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
     "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
+    DRAFTED_LABEL: {"background_color": "#b9e4d0", "text_color": "#076239", "label_list_visibility": "labelShowIfUnread"},  # green
 }
 
 # The org labels every account gets provisioned, derived from the one taxonomy
