@@ -10,7 +10,17 @@ from core.plans import (
     get_plan,
     razorpay_plan_id_for,
 )
-from models.routines import ROUTINE_BRIEFING, ROUTINE_INVOICES
+from models.routines import (
+    ROUTINE_BRIEFING,
+    ROUTINE_CATCHUP,
+    ROUTINE_CHASE_THREADS,
+    ROUTINE_DEADLINE_SCAN,
+    ROUTINE_DOUBLE_BOOKINGS,
+    ROUTINE_INVOICES,
+    ROUTINE_NEWSLETTER_DIGEST,
+    ROUTINE_RECONNECT,
+    ROUTINE_SCHEDULE_TRUSTED,
+)
 
 
 def test_both_tiers_exist():
@@ -42,11 +52,26 @@ def test_starter_gets_the_briefing_routine_only():
 
 
 def test_pro_gets_every_routine():
-    from models.routines import ROUTINE_BRIEFING as _b  # noqa: F401
+    # Enumerate all nine routine constants independently of core.plans'
+    # ALL_ROUTINES so a bad merge dropping one of them (e.g.
+    # ROUTINE_SCHEDULE_TRUSTED) from that set is actually caught here — a
+    # strict-subset check against Starter's one-element set would not notice.
+    all_nine = {
+        ROUTINE_BRIEFING,
+        ROUTINE_NEWSLETTER_DIGEST,
+        ROUTINE_CHASE_THREADS,
+        ROUTINE_RECONNECT,
+        ROUTINE_DEADLINE_SCAN,
+        ROUTINE_CATCHUP,
+        ROUTINE_INVOICES,
+        ROUTINE_DOUBLE_BOOKINGS,
+        ROUTINE_SCHEDULE_TRUSTED,
+    }
+    pro = get_plan(PLAN_PRO).entitlements.allowed_routines
+    assert pro == all_nine
 
     starter = get_plan(PLAN_STARTER).entitlements.allowed_routines
-    pro = get_plan(PLAN_PRO).entitlements.allowed_routines
-    assert starter < pro
+    assert starter == {ROUTINE_BRIEFING}
 
 
 def test_prices_are_in_cents():
@@ -100,3 +125,8 @@ def test_razorpay_plan_lookup_resolves_each_combination_independently(monkeypatc
 
 def test_currency_is_usd():
     assert CURRENCY == "USD"
+
+
+def test_bot_seconds_per_month_converts_hours_to_seconds():
+    e = get_plan(PLAN_PRO).entitlements
+    assert e.bot_seconds_per_month == e.bot_hours_per_month * 3600 == 54000
