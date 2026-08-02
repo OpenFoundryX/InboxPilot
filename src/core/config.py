@@ -77,6 +77,20 @@ class Settings(BaseSettings):
     RECALL_WEBHOOK_SECRET: str = ""
     RECALL_TIMEOUT_SECONDS: float = 30.0
 
+    # Billing. Entitlements live in core/plans.py, never in Razorpay metadata —
+    # only plan ids and secrets belong here.
+    # KEY_ID is public: it is handed to the browser to open the checkout modal.
+    # KEY_SECRET and WEBHOOK_SECRET must never reach a client.
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+    RAZORPAY_PLAN_STARTER_MONTHLY: str = ""
+    RAZORPAY_PLAN_STARTER_ANNUAL: str = ""
+    RAZORPAY_PLAN_PRO_MONTHLY: str = ""
+    RAZORPAY_PLAN_PRO_ANNUAL: str = ""
+    # How long a new subscriber gets full access before the first charge.
+    TRIAL_DAYS: int = 7
+
     @property
     def allowed_classifier_models(self) -> set[str]:
         listed = {m.strip() for m in self.CLASSIFIER_MODELS.split(",") if m.strip()}
