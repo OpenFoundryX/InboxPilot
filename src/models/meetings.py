@@ -84,6 +84,10 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     bot_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     recording_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How long the bot was actually in the call, from the provider's payload.
+    # `joined_at` alone cannot answer this, and bot-hours cannot be metered
+    # without it.
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # A link to the video, never the video. Providers sign these links for a few
     # hours, so this pair is a cache that knows its own deadline — the durable
