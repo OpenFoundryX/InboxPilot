@@ -18,7 +18,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY uv.lock* ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-dev
+    uv sync --extra dev
 
 # Copy the source. src/ is on PYTHONPATH so modules import as top-level.
 COPY . .

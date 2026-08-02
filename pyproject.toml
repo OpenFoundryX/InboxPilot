@@ -45,6 +45,11 @@ package = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# The session-scoped `engine` fixture in tests/conftest.py opens asyncpg
+# connections that must not cross event loops, so fixtures and tests share one
+# session-scoped loop instead of pytest-asyncio's default per-test loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 pythonpath = ["src"]
 
