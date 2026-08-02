@@ -40,7 +40,7 @@ revision: ## Autogenerate a migration: make revision m="message"
 
 .PHONY: test
 test: ## Run the test suite
-	$(COMPOSE) run --rm api pytest
+	$(COMPOSE) run --rm test pytest
 
 .PHONY: lint
 lint: ## Lint and type-check

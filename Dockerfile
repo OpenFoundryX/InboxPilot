@@ -18,7 +18,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY uv.lock* ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --extra dev
+    uv sync --no-dev
 
 # Copy the source. src/ is on PYTHONPATH so modules import as top-level.
 COPY . .
@@ -27,3 +27,12 @@ EXPOSE 8000
 
 # Default command runs the API; compose overrides this for worker/beat.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Test stage — adds pytest/ruff/mypy on top of `base`'s already-synced
+# production deps. api/worker/beat all pin `target: base` in docker-compose.yml
+# and never see dev tooling; only the compose `test` service targets this
+# stage, and only `make test` uses that service.
+FROM base AS test
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --extra dev
+CMD ["pytest"]

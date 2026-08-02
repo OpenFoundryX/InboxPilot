@@ -42,7 +42,9 @@ services:
       retries: 5
 
   api:
-    build: .
+    build:
+      context: .
+      target: base
     env_file: .env
     ports:
       - "8000:8000"
@@ -56,11 +58,12 @@ services:
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
-      - ./tests:/app/tests
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
-    build: .
+    build:
+      context: .
+      target: base
     env_file: .env
     depends_on:
       db:
@@ -74,7 +77,9 @@ services:
     command: celery -A worker.celery_app worker --loglevel=info
 
   beat:
-    build: .
+    build:
+      context: .
+      target: base
     env_file: .env
     depends_on:
       rabbitmq:
@@ -82,6 +87,27 @@ services:
     volumes:
       - ./src:/app/src
     command: celery -A worker.celery_app beat --loglevel=info
+
+  # Dev-tooling image (pytest/ruff/mypy) for `make test` only. Kept as its
+  # own service, on its own `test` build stage, so api/worker/beat never pull
+  # in dev dependencies — see Dockerfile.
+  test:
+    build:
+      context: .
+      target: test
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+      - ./tests:/app/tests
+    command: pytest
 
 volumes:
   pgdata:
