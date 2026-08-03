@@ -11,6 +11,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.billing import UsageCounter
@@ -24,16 +25,37 @@ def period_start_for(now: datetime) -> date:
 async def get_or_create_counter(
     db: AsyncSession, user_id: uuid.UUID, now: datetime
 ) -> UsageCounter:
+    """The period's counter row, inserting on first use.
+
+    Concurrent first-time callers — e.g. TrialPill, SubscribeBanner, and the
+    dashboard layout all hitting GET /billing/subscription at once — all try
+    to create the same `(user_id, period_start)` row. A plain SELECT-then-
+    INSERT races and 500s the losers on `uq_usage_counters_user_period`.
+    `ON CONFLICT DO NOTHING` makes the insert a no-op for everyone but the
+    winner, then the SELECT below returns whichever row exists. Same shape as
+    `services.activity.record._insert` — and deliberately *not* the
+    begin_nested/IntegrityError pattern in `services.drafts.store`, which
+    autoflushes the pending INSERT before the SAVEPOINT is opened and so
+    still poisons the outer transaction on conflict.
+    """
     period = period_start_for(now)
+    await db.execute(
+        insert(UsageCounter)
+        .values(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            period_start=period,
+            bot_seconds_used=0,
+            drafts_generated=0,
+        )
+        .on_conflict_do_nothing(constraint="uq_usage_counters_user_period")
+    )
     counter = await db.scalar(
         select(UsageCounter).where(
             UsageCounter.user_id == user_id, UsageCounter.period_start == period
         )
     )
-    if counter is None:
-        counter = UsageCounter(user_id=user_id, period_start=period)
-        db.add(counter)
-        await db.flush()
+    assert counter is not None
     return counter
 
 

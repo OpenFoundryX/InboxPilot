@@ -34,6 +34,26 @@ async def test_counter_is_reused_within_a_period(db, user):
     assert first.id == second.id
 
 
+async def test_get_or_create_counter_returns_the_winner_on_a_concurrent_insert(db, user):
+    """Two first-time GET /billing/subscription callers both INSERT the same
+    `(user_id, period_start)` row. `ON CONFLICT DO NOTHING` makes the loser's
+    insert a no-op; they must still get the winner's row back, not a 500 —
+    that is what was breaking the dashboard when TrialPill/SubscribeBanner/
+    layout all fetched at once.
+    """
+    from models.billing import UsageCounter
+
+    winner = UsageCounter(user_id=user.id, period_start=date(2026, 8, 1))
+    db.add(winner)
+    await db.flush()
+
+    # This call's INSERT conflicts with `winner` and must not raise.
+    result = await get_or_create_counter(db, user.id, AUG)
+
+    assert result.id == winner.id
+    assert result.bot_seconds_used == 0
+
+
 async def test_bot_seconds_accumulate(db, user):
     await add_bot_seconds(db, user.id, 1800, AUG)
     counter = await add_bot_seconds(db, user.id, 900, AUG)
