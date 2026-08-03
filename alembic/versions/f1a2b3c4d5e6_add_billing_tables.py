@@ -24,7 +24,6 @@ def upgrade() -> None:
             sa.UUID(as_uuid=True),
             sa.ForeignKey("users.id", ondelete="CASCADE"),
             nullable=False,
-            unique=True,
         ),
         sa.Column("razorpay_customer_id", sa.String(64), nullable=True),
         sa.Column("razorpay_subscription_id", sa.String(64), nullable=True),
@@ -45,7 +44,7 @@ def upgrade() -> None:
             "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
     )
-    op.create_index("ix_subscriptions_user_id", "subscriptions", ["user_id"])
+    op.create_index("ix_subscriptions_user_id", "subscriptions", ["user_id"], unique=True)
     op.create_index("ix_subscriptions_status", "subscriptions", ["status"])
     op.create_index(
         "ix_subscriptions_razorpay_customer_id", "subscriptions", ["razorpay_customer_id"]
