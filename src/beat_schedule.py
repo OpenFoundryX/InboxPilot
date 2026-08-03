@@ -47,6 +47,13 @@ beat_schedule: dict = {
         "task": "drafts.follow_up",
         "schedule": 3600.0,
     },
+    # Enforce per-plan video/transcript retention windows. Daily is frequent
+    # enough for windows measured in days, and keeps the job off the same
+    # minute as the hot per-minute sweeps.
+    "retention-sweep": {
+        "task": "retention.sweep",
+        "schedule": crontab(hour=4, minute=15),
+    },
 }
 
 __all__ = ["beat_schedule", "crontab"]
