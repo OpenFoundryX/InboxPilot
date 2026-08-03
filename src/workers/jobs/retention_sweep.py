@@ -9,7 +9,7 @@ already delivered and what users actually return to.
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import run_async, with_worker_session
@@ -32,11 +32,19 @@ async def prune_user(db: AsyncSession, user_id: uuid.UUID, now: datetime) -> dic
     video_cutoff = now - timedelta(days=entitlements.video_retention_days)
     transcript_cutoff = now - timedelta(days=entitlements.transcript_retention_days)
 
+    # Ad-hoc (paste-a-link) meetings never get a calendar `starts_at` — it stays
+    # NULL for the life of the row. `NULL < cutoff` is NULL, not true, so those
+    # meetings would otherwise never age out on any plan. `created_at` is the
+    # next best anchor: it's non-null on every row and, for an ad-hoc meeting,
+    # is set at the moment the call was requested — close enough to "when this
+    # happened" for a retention window measured in days.
+    meeting_age = func.coalesce(Meeting.starts_at, Meeting.created_at)
+
     videos = 0
     stale_media = await db.scalars(
         select(Meeting).where(
             Meeting.user_id == user_id,
-            Meeting.starts_at < video_cutoff,
+            meeting_age < video_cutoff,
             Meeting.recording_id.isnot(None),
         )
     )
@@ -44,13 +52,17 @@ async def prune_user(db: AsyncSession, user_id: uuid.UUID, now: datetime) -> dic
         meeting.recording_id = None
         meeting.recording_url = None
         meeting.recording_url_expires_at = None
+        # Marks this as deliberately pruned, not merely "never had a video" —
+        # `resolve_recording_url` checks this before re-fetching from the
+        # provider, so the prune can't be undone by the next page view.
+        meeting.recording_pruned_at = now
         videos += 1
 
     transcripts = 0
     stale_transcripts = await db.scalars(
         select(Meeting).where(
             Meeting.user_id == user_id,
-            Meeting.starts_at < transcript_cutoff,
+            meeting_age < transcript_cutoff,
             Meeting.transcript.isnot(None),
         )
     )

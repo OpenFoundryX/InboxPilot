@@ -98,6 +98,16 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Set once, by retention pruning, the moment `recording_id`/`recording_url`
+    # are cleared for being past the plan's video window. Never cleared again.
+    # This is what tells `resolve_recording_url` "deliberately removed" apart
+    # from "never had a recording" — both look like `recording_id is None`
+    # otherwise, and without this a re-resolve would just fetch the video back
+    # from the provider and undo the prune on the next page view.
+    recording_pruned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     decisions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
