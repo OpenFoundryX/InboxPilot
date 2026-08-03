@@ -26,6 +26,7 @@ from models.routines import (
     Routine,
 )
 from models.users import User
+from services.billing.entitlements import FEATURE_ROUTINE, check
 from services.digest.briefing import compose_briefing
 from services.digest.calendar_checks import double_bookings_digest
 from services.digest.catchup import compose_catchup
@@ -77,6 +78,21 @@ async def _sweep(db) -> dict:
         if routine.weekday is not None and now_local.weekday() != routine.weekday:
             continue
         if now_local.hour * 60 + now_local.minute != _hm(routine.run_time):
+            continue
+
+        decision = await check(
+            db, routine.user_id, FEATURE_ROUTINE, routine_type=routine.type, now=now_utc
+        )
+        if not decision.allowed:
+            log.info(
+                "routines.skipped_no_entitlement",
+                type=routine.type,
+                user_id=str(routine.user_id),
+                reason=decision.reason,
+            )
+            # Stamp anyway: without this the routine is re-evaluated every minute
+            # of its scheduled hour, once per user, forever.
+            routine.last_run_at = now_utc
             continue
 
         try:
