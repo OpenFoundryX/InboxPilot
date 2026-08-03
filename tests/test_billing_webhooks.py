@@ -1,11 +1,17 @@
 import hashlib
 import hmac
 import json
+import uuid
 from datetime import datetime, timezone
 
+import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from core.config import settings
+from core.database import get_db
 from core.plans import INTERVAL_MONTHLY, PLAN_PRO
+from main import app
 from models.billing import (
     STATUS_ACTIVE,
     STATUS_AUTHENTICATED,
@@ -18,6 +24,8 @@ from services.billing.webhooks import handle_event, verify_signature
 
 SEP_1 = int(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp())
 AUG_1 = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())
+
+ROUTE_SECRET = "whsec_route_test"
 
 
 def _event(event_type, *, status="active", end=SEP_1, sub_id="sub_test", user_id=None):
@@ -34,6 +42,36 @@ def _event(event_type, *, status="active", end=SEP_1, sub_id="sub_test", user_id
                 }
             }
         },
+    }
+
+
+@pytest.fixture
+async def client(db, monkeypatch):
+    """A real ASGI client against `/v1/webhooks/razorpay`.
+
+    `verify_signature` is proven correct as a pure function above, but the raw-
+    body requirement is a property of the *route* — whether it hands
+    `verify_signature` the untouched bytes it read off the wire, before any
+    parsing. Only a request that actually goes through FastAPI's body-reading
+    machinery can prove that; a unit test calling the function directly cannot.
+    """
+    app.dependency_overrides[get_db] = lambda: db
+    monkeypatch.setattr(settings, "RAZORPAY_WEBHOOK_SECRET", ROUTE_SECRET)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+def _sign(body: bytes, secret: str = ROUTE_SECRET) -> str:
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def _headers(signature: str) -> dict:
+    return {
+        "x-razorpay-signature": signature,
+        "x-razorpay-event-id": f"evt_{uuid.uuid4()}",
+        "content-type": "application/json",
     }
 
 
@@ -148,3 +186,118 @@ async def test_unrelated_events_are_ignored(db, user):
 
 async def test_events_for_unknown_subscriptions_are_ignored(db, user):
     assert await handle_event(db, _event("subscription.charged")) == "ignored"
+
+
+# --- Route-level tests -------------------------------------------------------
+#
+# Everything above calls `handle_event`/`verify_signature` directly. That
+# proves the functions are correct but not that the route feeds them the right
+# bytes — a refactor that swapped `request.body()` for `request.json()` and
+# re-dumped it would pass every test above while reintroducing exactly the
+# failure the brief warns about. These go through the real ASGI route instead.
+
+
+async def test_route_applies_a_correctly_signed_event(db, user, client):
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_test",
+        )
+    )
+    await db.flush()
+
+    body = json.dumps(_event("subscription.activated", status="active")).encode()
+    response = await client.post(
+        "/v1/webhooks/razorpay", content=body, headers=_headers(_sign(body))
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "applied"
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.status == STATUS_ACTIVE
+
+
+async def test_route_rejects_a_wrong_signature_and_writes_nothing(db, user, client):
+    original_end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_test",
+            current_period_end=original_end,
+        )
+    )
+    await db.flush()
+
+    body = json.dumps(_event("subscription.activated", status="active")).encode()
+    response = await client.post(
+        "/v1/webhooks/razorpay", content=body, headers=_headers("deadbeef" * 8)
+    )
+
+    assert response.status_code == 400
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.status == STATUS_AUTHENTICATED
+    assert sub.current_period_end == original_end
+
+
+async def test_route_rejects_a_missing_signature_header(db, user, client):
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_test",
+        )
+    )
+    await db.flush()
+
+    body = json.dumps(_event("subscription.activated", status="active")).encode()
+    response = await client.post(
+        "/v1/webhooks/razorpay",
+        content=body,
+        headers={"content-type": "application/json", "x-razorpay-event-id": "evt_no_sig"},
+    )
+
+    assert response.status_code == 400
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.status == STATUS_AUTHENTICATED
+
+
+async def test_route_verifies_the_raw_bytes_not_a_reserialised_form(db, user, client):
+    """The single most important property from the brief, proven at the ASGI
+    layer: a signature computed over a *reserialised* form of the same JSON
+    object must not verify against the differently-formatted raw bytes the
+    route actually receives on the wire.
+    """
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_test",
+        )
+    )
+    await db.flush()
+
+    payload = _event("subscription.activated", status="active")
+    raw = json.dumps(payload, indent=2).encode()  # what the route actually receives
+    reserialised_signature = _sign(json.dumps(payload).encode())  # compact re-dump, signed
+
+    response = await client.post(
+        "/v1/webhooks/razorpay", content=raw, headers=_headers(reserialised_signature)
+    )
+
+    assert response.status_code == 400
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.status == STATUS_AUTHENTICATED

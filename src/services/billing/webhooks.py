@@ -6,9 +6,10 @@ an older `current_end` than the row already holds is discarded, so a late
 redelivery cannot resurrect a period that has already advanced.
 
 Events are matched to a row by `razorpay_subscription_id`. The very first event
-for a new subscriber may arrive before that id is stored, so
-`subscription.authenticated` also falls back to the `user_id` we set in the
-subscription's `notes` at creation time.
+for a new subscriber may arrive before that id is stored — in practice this is
+always `subscription.authenticated`, since it fires first, but any handled
+event that misses the id lookup falls back the same way: to the `user_id` we
+set in the subscription's `notes` at creation time.
 """
 
 import hashlib
@@ -119,7 +120,7 @@ async def _link_by_notes(
     first webhook can find its row even if it arrives before the id was stored.
     """
     raw_user_id = entity.get("notes", {}).get("user_id")
-    if not raw_user_id or raw_user_id == "None":
+    if not raw_user_id:
         return None
     try:
         user_id = uuid.UUID(raw_user_id)
