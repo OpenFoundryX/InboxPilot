@@ -321,3 +321,31 @@ async def test_cancel_marks_cancel_at_period_end(db, user, client, fake_razorpay
     assert sub.cancel_at_period_end is True
     # Cancel at cycle end: they keep what they paid for until the period closes.
     assert fake_razorpay["cancel"]["at_cycle_end"] is True
+
+
+async def test_cancel_during_trial_cancels_immediately(db, user, client, fake_razorpay):
+    """Razorpay rejects cancel_at_cycle_end while the subscription is still
+    `authenticated` (trial, no billing cycle yet). Cancel must be immediate."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_trial",
+            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=5),
+            trial_consumed=True,
+        )
+    )
+    await db.flush()
+
+    response = await client.post("/v1/billing/cancel")
+    assert response.status_code == 200
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert fake_razorpay["cancel"]["at_cycle_end"] is False
+    assert sub.cancel_at_period_end is False
+    assert sub.status == STATUS_CANCELLED
+    assert response.json()["access"] == "locked"

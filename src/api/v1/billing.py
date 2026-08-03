@@ -22,7 +22,14 @@ from core.plans import (
     get_plan,
     razorpay_plan_id_for,
 )
-from models.billing import STATUS_CANCELLED, STATUS_COMPLETED, STATUS_EXPIRED, Subscription
+from models.billing import (
+    STATUS_ACTIVE,
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_EXPIRED,
+    STATUS_PENDING,
+    Subscription,
+)
 from models.users import User
 from schemas.billing import (
     CheckoutIn,
@@ -242,13 +249,24 @@ async def cancel(user: CurrentUser, db: Db) -> SubscriptionOut:
     if not sub or not sub.razorpay_subscription_id:
         raise HTTPException(status.HTTP_409_CONFLICT, "No active subscription to cancel.")
 
+    # `cancel_at_cycle_end` only works once a billing cycle is running
+    # (`active` / `pending`). During the trial (`authenticated`) — or before
+    # the mandate is signed (`created`) — Razorpay rejects cycle-end cancel
+    # with "Subscription cannot be cancelled since no billing cycle is going
+    # on". Immediate cancel is the right semantics there anyway: nothing has
+    # been charged yet, so there is no prepaid period to honour.
+    at_cycle_end = sub.status in {STATUS_ACTIVE, STATUS_PENDING}
     razorpay_client.cancel_subscription(
-        subscription_id=sub.razorpay_subscription_id, at_cycle_end=True
+        subscription_id=sub.razorpay_subscription_id, at_cycle_end=at_cycle_end
     )
-    # The webhook will move `status` when Razorpay actually ends it. Recording
-    # the intent now means the UI reflects the cancellation immediately instead
-    # of looking like the click did nothing.
-    sub.cancel_at_period_end = True
+    # Cycle-end: keep access until the period closes; the webhook flips
+    # `status` later. Immediate (trial): mark cancelled locally now so the UI
+    # doesn't keep looking entitled while we wait for the webhook.
+    if at_cycle_end:
+        sub.cancel_at_period_end = True
+    else:
+        sub.cancel_at_period_end = False
+        sub.status = STATUS_CANCELLED
     await db.flush()
 
     return await _subscription_out(sub, user.id, db)
