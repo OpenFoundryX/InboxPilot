@@ -1,15 +1,30 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from core.database import get_db
 from core.plans import INTERVAL_MONTHLY, PLAN_PRO, PLAN_STARTER
+from main import app
 from models.billing import STATUS_ACTIVE, Subscription
 from models.meetings import Meeting
+from services.auth.dependencies import get_current_user
 from services.billing.entitlements import FEATURE_MEETING_BOT, check
 from services.billing.usage import add_bot_seconds, get_or_create_counter
 from workers.jobs.process_meeting import compute_duration_seconds
 
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+async def client(db, user):
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: user
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
 
 
 async def _returns(value):
@@ -203,3 +218,102 @@ async def test_join_now_books_a_bot_when_entitled(db, user, monkeypatch):
 
     assert booked == [str(meeting.id)]
     assert result["booked"] is True
+
+
+async def test_join_route_rejects_a_locked_user_with_402_and_enqueues_nothing(
+    client, monkeypatch
+):
+    """The synchronous, user-initiated path must give a real answer, not a
+    202 that quietly does nothing: a user with no active subscription hits
+    `POST /meetings/join` and should get a 402, with no Celery task ever
+    enqueued — checked on the absence of the `.delay()` call itself, not just
+    the status code, since a 402 with a task enqueued anyway would still be
+    the bug this exists to prevent.
+    """
+    from workers.jobs.meetings_sweep import join_now
+
+    called: list[tuple] = []
+    monkeypatch.setattr(join_now, "delay", lambda *a, **k: called.append(a))
+
+    response = await client.post(
+        "/v1/meetings/join", json={"meeting_url": "https://meet.google.com/abc-defg-hij"}
+    )
+
+    assert response.status_code == 402
+    assert called == []
+
+
+async def test_join_route_succeeds_for_an_entitled_user(client, db, user, monkeypatch):
+    """Regression guard: the new 402 gate must not block a normal join."""
+    from workers.jobs.meetings_sweep import join_now
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_ACTIVE,
+        )
+    )
+    await db.flush()
+
+    called: list[tuple] = []
+    monkeypatch.setattr(join_now, "delay", lambda *a, **k: called.append(a))
+
+    response = await client.post(
+        "/v1/meetings/join", json={"meeting_url": "https://meet.google.com/abc-defg-hij"}
+    )
+
+    assert response.status_code == 202
+    assert len(called) == 1
+
+
+async def test_bot_route_rejects_a_locked_user_with_402_and_enqueues_nothing(
+    client, monkeypatch
+):
+    """Same guarantee as the `/join` route, for the calendar-event path."""
+    from workers.jobs.meetings_sweep import join_now
+
+    called: list[tuple] = []
+    monkeypatch.setattr(join_now, "delay", lambda *a, **k: called.append(a))
+
+    response = await client.post("/v1/meetings/bot", json={"calendar_event_id": "evt-1"})
+
+    assert response.status_code == 402
+    assert called == []
+
+
+async def test_bot_route_succeeds_for_an_entitled_user(client, db, user, monkeypatch):
+    """Regression guard: an entitled user enabling the bot on a real calendar
+    event still gets booked, past the new quota gate.
+    """
+    from api.v1 import meetings as meetings_api
+    from workers.jobs.meetings_sweep import join_now
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_ACTIVE,
+        )
+    )
+    await db.flush()
+
+    now = datetime.now(timezone.utc)
+    event = {
+        "id": "evt-1",
+        "summary": "Standup",
+        "hangoutLink": "https://meet.google.com/abc-defg-hij",
+        "start": {"dateTime": (now + timedelta(minutes=30)).isoformat()},
+        "end": {"dateTime": (now + timedelta(minutes=60)).isoformat()},
+    }
+    monkeypatch.setattr(meetings_api.calendar, "list_events", lambda *a, **k: [event])
+
+    called: list[tuple] = []
+    monkeypatch.setattr(join_now, "delay", lambda *a, **k: called.append(a))
+
+    response = await client.post("/v1/meetings/bot", json={"calendar_event_id": "evt-1"})
+
+    assert response.status_code == 202
+    assert len(called) == 1
