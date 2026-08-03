@@ -26,6 +26,7 @@ from models.meetings import (
     MeetingSettings,
 )
 from models.users import User
+from services.billing.entitlements import FEATURE_MEETING_BOT, check
 from services.meetings.rules import skip_reason
 from services.meetings.store import (
     get_or_create_settings,
@@ -107,6 +108,18 @@ async def _sweep_user(db, settings_row: MeetingSettings) -> tuple[int, int]:
 
     scheduled = 0
     for meeting in await list_awaiting_bots(db, user_id):
+        decision = await check(db, user_id, FEATURE_MEETING_BOT, now=now)
+        if not decision.allowed:
+            # Out of quota or unsubscribed. The meeting stays tracked and still
+            # shows in the dashboard — it just goes unattended, rather than the
+            # user's calendar sync appearing broken.
+            log.info(
+                "meetings.bot_withheld",
+                user_id=str(user_id),
+                meeting_id=str(meeting.id),
+                reason=decision.reason,
+            )
+            break
         if _book_bot(meeting, settings_row.bot_name, now):
             scheduled += 1
 
