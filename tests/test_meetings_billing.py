@@ -2,11 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from core.plans import INTERVAL_MONTHLY, PLAN_STARTER
+from core.plans import INTERVAL_MONTHLY, PLAN_PRO, PLAN_STARTER
 from models.billing import STATUS_ACTIVE, Subscription
 from models.meetings import Meeting
 from services.billing.entitlements import FEATURE_MEETING_BOT, check
-from services.billing.usage import add_bot_seconds
+from services.billing.usage import add_bot_seconds, get_or_create_counter
 from workers.jobs.process_meeting import compute_duration_seconds
 
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
@@ -85,3 +85,121 @@ async def test_sweep_books_no_bot_for_a_locked_user(db, user, monkeypatch):
     await meetings_sweep._sweep_user(db, settings_row)
 
     assert booked == []
+
+
+async def test_empty_transcript_meeting_still_meters(db, user, monkeypatch):
+    """A silent call still occupied real bot wall-clock time; it must still meter.
+
+    Before this fix, `_process` returned as soon as it saw an empty transcript,
+    before ever reaching the metering block — so a call where nobody spoke was
+    billed as zero, making that bot-hour free.
+    """
+    from integrations.meetingbot.base import Transcript
+    from workers.jobs import process_meeting
+
+    class _SilentProvider:
+        def fetch_transcript(self, bot_id):
+            return Transcript(segments=[])
+
+    monkeypatch.setattr(process_meeting, "get_provider", lambda: _SilentProvider())
+
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        bot_id="bot-1",
+        joined_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    db.add(meeting)
+    await db.flush()
+
+    result = await process_meeting._process(db, str(meeting.id))
+
+    assert result == {"skipped": "empty transcript"}
+    assert meeting.duration_seconds is not None
+    assert meeting.duration_seconds > 0
+
+    counter = await get_or_create_counter(db, user.id, datetime.now(timezone.utc))
+    assert counter.bot_seconds_used == meeting.duration_seconds
+
+
+async def test_reprocessing_a_meeting_meters_once(db, user, monkeypatch):
+    """The `duration_seconds is None` guard is what stops a `process_meeting`
+    retry from double-counting a meeting's bot-seconds.
+
+    Runs the same meeting through `_process` twice and checks the usage
+    counter — the thing quota decisions actually read — reflects one pass,
+    not a return value that could be right for the wrong reason.
+    """
+    from workers.jobs import process_meeting
+
+    # Short-circuits after metering so this test doesn't need a real LLM call.
+    monkeypatch.setattr(process_meeting, "summarize", lambda *a, **k: None)
+
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        bot_id="bot-1",
+        joined_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        transcript="Alice: hello there",
+    )
+    db.add(meeting)
+    await db.flush()
+
+    await process_meeting._process(db, str(meeting.id))
+    first = await get_or_create_counter(db, user.id, datetime.now(timezone.utc))
+    assert first.bot_seconds_used > 0
+
+    await process_meeting._process(db, str(meeting.id))
+    second = await get_or_create_counter(db, user.id, datetime.now(timezone.utc))
+    assert second.bot_seconds_used == first.bot_seconds_used
+
+
+async def test_join_now_books_no_bot_for_a_locked_user(db, user, monkeypatch):
+    """The pasted-link path must not be a way to dodge the quota gate.
+
+    Same intent as `test_sweep_books_no_bot_for_a_locked_user`: assert on the
+    absence of the outbound booking call, not merely on the return value.
+    """
+    from workers.jobs import meetings_sweep
+
+    meeting = Meeting(user_id=user.id, meeting_url="https://meet.example/x")
+    db.add(meeting)
+    await db.flush()
+
+    booked: list[str] = []
+    monkeypatch.setattr(
+        meetings_sweep, "_book_bot", lambda m, name, now: booked.append(str(m.id)) or True
+    )
+
+    result = await meetings_sweep._join_now(db, str(meeting.id))
+
+    assert booked == []
+    assert result["booked"] is False
+    assert meeting.status_detail == "bot withheld: locked"
+
+
+async def test_join_now_books_a_bot_when_entitled(db, user, monkeypatch):
+    """Regression guard: the new gate must not block a normal, entitled join."""
+    from workers.jobs import meetings_sweep
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_ACTIVE,
+        )
+    )
+    meeting = Meeting(user_id=user.id, meeting_url="https://meet.example/x")
+    db.add(meeting)
+    await db.flush()
+
+    booked: list[str] = []
+    monkeypatch.setattr(
+        meetings_sweep, "_book_bot", lambda m, name, now: booked.append(str(m.id)) or True
+    )
+
+    result = await meetings_sweep._join_now(db, str(meeting.id))
+
+    assert booked == [str(meeting.id)]
+    assert result["booked"] is True

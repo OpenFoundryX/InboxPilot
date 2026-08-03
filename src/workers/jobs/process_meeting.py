@@ -78,27 +78,27 @@ async def _process(db, meeting_id: str) -> dict:
     await resolve_recording_url(db, meeting)
 
     # Populated only when this run is the one that freshly fetched the
-    # transcript; a retry that finds `meeting.transcript` already stored has
-    # no provider object left to read a duration off, and falls back to
-    # wall-clock below.
+    # transcript; a retry that finds `meeting.transcript` already stored (or a
+    # meeting whose transcript was already populated before duration metering
+    # existed) has no provider object left to read a duration off, and falls
+    # back to wall-clock below.
     transcript_payload: dict = {}
+    transcript_is_empty = False
     if not meeting.transcript:
         transcript = get_provider().fetch_transcript(meeting.bot_id)
-        if transcript.is_empty:
-            # A bot that sat in a waiting room, or a call where nobody spoke.
-            # Silence is not worth an email.
-            meeting.status = STATUS_PROCESSED
-            meeting.status_detail = "empty transcript"
-            log.info("meetings.empty_transcript", meeting_id=meeting_id)
-            return {"skipped": "empty transcript"}
-        meeting.transcript = transcript.render()
         transcript_payload = asdict(transcript)
+        transcript_is_empty = transcript.is_empty
+        if not transcript_is_empty:
+            meeting.transcript = transcript.render()
         await db.flush()
 
-    # Gated on `duration_seconds is None` rather than on the transcript branch
-    # above: `process_meeting` declares retries, so a re-run must not meter
-    # the same call twice, and a Starter user's whole month is one meeting's
-    # worth of bot-hours.
+    # Metered before the empty-transcript early return below, and gated on
+    # `duration_seconds is None` rather than on which branch ran above: a bot
+    # that sat through a silent call still occupied real wall-clock time we
+    # pay the provider for, so skipping it here would make those bot-hours
+    # free. `process_meeting` declares retries, so a re-run must not meter the
+    # same call twice — a Starter user's whole month is one meeting's worth of
+    # bot-hours.
     if meeting.duration_seconds is None:
         meeting.duration_seconds = compute_duration_seconds(
             meeting, transcript_payload, now=datetime.now(timezone.utc)
@@ -106,7 +106,14 @@ async def _process(db, meeting_id: str) -> dict:
         await add_bot_seconds(
             db, meeting.user_id, meeting.duration_seconds, datetime.now(timezone.utc)
         )
-        await db.flush()
+
+    if transcript_is_empty:
+        # A bot that sat in a waiting room, or a call where nobody spoke.
+        # Silence is not worth an email.
+        meeting.status = STATUS_PROCESSED
+        meeting.status_detail = "empty transcript"
+        log.info("meetings.empty_transcript", meeting_id=meeting_id)
+        return {"skipped": "empty transcript"}
 
     extracted = summarize(
         meeting.transcript,
