@@ -39,15 +39,20 @@ async def _labels_for_keys(db, user_id: uuid.UUID, keys: tuple[str, ...]) -> lis
     return [(c.key, c.gmail_label) for c in categories if c.key in keys and c.is_enabled]
 
 
-def effective_limit(budget: int | None) -> int:
+def effective_limit(budget: int | None, max_per_sweep: int = MAX_PER_SWEEP) -> int:
     """How many drafts this pass may create.
 
     `budget` is what the user's plan has left this month. Without it the sweep
     would create a whole batch for someone with one draft of quota remaining.
+
+    `max_per_sweep` defaults to this module's own cap. `follow_up.sweep_user`
+    reuses this function rather than duplicating the min/max logic, but its
+    per-sweep ceiling (5) is not this module's (10), so it passes its own
+    constant explicitly instead of relying on the default.
     """
     if budget is None:
-        return MAX_PER_SWEEP
-    return min(MAX_PER_SWEEP, max(0, budget))
+        return max_per_sweep
+    return min(max_per_sweep, max(0, budget))
 
 
 def sweep_user(

@@ -75,8 +75,13 @@ async def _due_users(db, field: str, delta: timedelta) -> list[tuple[str, DraftC
     for row in rows:
         if not _is_due(getattr(row, field), delta):
             continue
-        if not await may_draft(db, row.user_id, now):
-            log.info("drafts.skipped_no_entitlement", user_id=str(row.user_id))
+        decision = await check(db, row.user_id, FEATURE_DRAFT, now=now)
+        if not decision.allowed:
+            log.info(
+                "drafts.skipped_no_entitlement",
+                user_id=str(row.user_id),
+                reason=decision.reason,
+            )
             continue
         budget = await remaining_drafts(db, row.user_id, now)
         out.append((str(row.user_id), await load_config(db, row.user_id), budget))
@@ -145,15 +150,12 @@ def drafts_follow_up() -> dict:
             )
         )
         try:
-            # Follow-up nudges are drafts too, and `_due_users` already excluded
-            # anyone locked or at 0 remaining. `budget` is not threaded into
-            # `follow_up.sweep_user` (unlike the catch-up sweep) — that
-            # function's own `MAX_PER_SWEEP` is 5, small enough that this pass
-            # is not the exactness-critical path the brief calls out, and its
-            # signature is not part of this task's interface. Usage is still
-            # recorded so the counter — and therefore the next sweep's
-            # `remaining_drafts` — stays accurate.
-            made = follow_up.sweep_user(user_id, config)
+            # Follow-up nudges are drafts too and draw on the same monthly
+            # quota, so `budget` is capped here exactly as it is for the
+            # catch-up sweep — otherwise a user near their limit could take a
+            # full `follow_up.MAX_PER_SWEEP` batch of nudges and land over
+            # quota within this single pass.
+            made = follow_up.sweep_user(user_id, config, budget=budget)
             nudges += made
             if made:
                 run_async(
