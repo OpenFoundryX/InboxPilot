@@ -26,6 +26,7 @@ from models.billing import (
     STATUS_ACTIVE,
     STATUS_CANCELLED,
     STATUS_COMPLETED,
+    STATUS_CREATED,
     STATUS_EXPIRED,
     STATUS_PENDING,
     Subscription,
@@ -217,6 +218,12 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     sub.currency = CURRENCY
     sub.trial_ends_at = trial_ends_at
     sub.trial_consumed = True
+    # Mirror Razorpay's status onto the row now. Without this, a re-subscribe
+    # after cancel leaves `status = cancelled` until the webhook lands — and
+    # if the webhook is delayed/failing, Settings keeps saying "inactive"
+    # even though checkout just succeeded. `created` (mandate not yet signed)
+    # stays locked by design; the authenticated webhook then unlocks.
+    sub.status = created.get("status") or STATUS_CREATED
     # A prior cancellation must not survive into a new subscription — without
     # this, a customer who cancels and later re-subscribes carries a
     # permanent "cancels at period end" label on an actively billing account

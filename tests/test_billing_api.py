@@ -349,3 +349,35 @@ async def test_cancel_during_trial_cancels_immediately(db, user, client, fake_ra
     assert sub.cancel_at_period_end is False
     assert sub.status == STATUS_CANCELLED
     assert response.json()["access"] == "locked"
+
+
+async def test_checkout_after_cancel_clears_cancelled_status(
+    db, user, client, fake_razorpay
+):
+    """Re-subscribe must not leave `status = cancelled` on the row — that is
+    what made Settings keep saying inactive after a successful reactivation."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_old_cancelled",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_test123"
+    assert sub.status == "created"
+    assert sub.cancel_at_period_end is False

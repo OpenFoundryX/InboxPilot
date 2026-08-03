@@ -107,6 +107,18 @@ async def test_authenticated_links_the_subscription_by_notes(db, user):
     assert sub.status == STATUS_AUTHENTICATED
 
 
+async def test_webhook_ignores_notes_pointing_at_a_deleted_user(db):
+    """Razorpay keeps delivering for subscriptions whose local user was wiped.
+    Creating a subscriptions row for them FK-500s the webhook and Razorpay
+    retries forever — ignore instead."""
+    missing = uuid.uuid4()
+    result = await handle_event(
+        db, _event("subscription.authenticated", status="authenticated", user_id=missing)
+    )
+    assert result == "ignored"
+    assert (await db.scalar(select(Subscription).where(Subscription.user_id == missing))) is None
+
+
 async def test_activated_moves_an_existing_row_to_active(db, user):
     db.add(
         Subscription(

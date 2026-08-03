@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
 from models.billing import Subscription
+from models.users import User
 
 log = get_logger(__name__)
 
@@ -126,6 +127,19 @@ async def _link_by_notes(
         user_id = uuid.UUID(raw_user_id)
     except ValueError:
         log.warning("billing.bad_notes_user_id", value=raw_user_id)
+        return None
+
+    # A deleted / wiped test user leaves live Razorpay subscriptions behind;
+    # their webhooks still carry the old notes.user_id. Creating a row for
+    # them hits `subscriptions_user_id_fkey` and 500s — which Razorpay then
+    # retries forever. Ignore cleanly instead.
+    user = await db.get(User, user_id)
+    if user is None:
+        log.info(
+            "billing.webhook_unknown_user",
+            user_id=str(user_id),
+            razorpay_subscription_id=subscription_id,
+        )
         return None
 
     sub = await db.scalar(select(Subscription).where(Subscription.user_id == user_id))
