@@ -196,3 +196,38 @@ def test_follow_up_sweep_user_unlimited_budget_gets_its_own_full_batch(monkeypat
 
     assert created == follow_up_service.MAX_PER_SWEEP == 5
     assert len(calls) == 5
+
+
+def test_second_invocation_is_skipped_while_the_shared_lock_is_held(monkeypatch):
+    """Neither task may do any work while the other holds `DRAFTS_LOCK`.
+
+    A budget snapshot computed by `_due_users` is only exact for the length of
+    one run — if `drafts_sweep` and `drafts_follow_up` could run concurrently
+    (or either could overlap itself), both would spend from the same stale
+    remaining-quota snapshot, which is exactly the overshoot this task exists
+    to prevent. `DRAFTS_LOCK` is shared between both tasks for that reason,
+    not scoped per task; this pins that specific decision, not just "some
+    lock exists".
+
+    `run_async` is monkeypatched to fail loudly if it is ever called, which is
+    the only path through which `_due_users`, any Gmail fetch, or any drafting
+    can happen — so this also stands in for "must not draft" without needing
+    a live due-user fixture (real Postgres rows, Gmail mocks, and drafting
+    plumbing), which `single_run`'s all-or-nothing lock check makes
+    unnecessary here: the task returns before touching any of that.
+    """
+    from workers.jobs import drafts_sweep as drafts_sweep_module
+
+    def _run_async_must_not_be_called(coro):
+        raise AssertionError("run_async was called while the lock was held")
+
+    monkeypatch.setattr(drafts_sweep_module, "run_async", _run_async_must_not_be_called)
+
+    with drafts_sweep_module.single_run(drafts_sweep_module.DRAFTS_LOCK) as acquired:
+        assert acquired is True  # the test itself holds the lock now
+
+        sweep_result = drafts_sweep_module.drafts_sweep()
+        follow_up_result = drafts_sweep_module.drafts_follow_up()
+
+    assert sweep_result == {"skipped": "locked"}
+    assert follow_up_result == {"skipped": "locked"}
