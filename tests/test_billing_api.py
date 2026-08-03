@@ -6,7 +6,12 @@ from httpx import ASGITransport, AsyncClient
 from core.database import get_db
 from core.plans import INTERVAL_MONTHLY, PLAN_PRO
 from main import app
-from models.billing import STATUS_ACTIVE, STATUS_AUTHENTICATED, Subscription
+from models.billing import (
+    STATUS_ACTIVE,
+    STATUS_AUTHENTICATED,
+    STATUS_CANCELLED,
+    Subscription,
+)
 from services.auth.dependencies import get_current_user
 
 
@@ -122,6 +127,78 @@ async def test_checkout_persists_the_razorpay_ids(db, user, client, fake_razorpa
     assert sub.razorpay_customer_id == "cust_test123"
     assert sub.razorpay_subscription_id == "sub_test123"
     assert sub.plan_id == "pro"
+    assert sub.trial_consumed is True
+
+
+async def test_checkout_continues_a_still_running_trial_instead_of_restarting(
+    db, user, client, fake_razorpay
+):
+    """Cancel mid-trial and check out again must not mint a fresh 7 days.
+
+    `trial_consumed` is the once-per-customer marker: while the original
+    `trial_ends_at` is still in the future, a new checkout must schedule
+    Razorpay's `start_at` against that same instant, not `now + TRIAL_DAYS`.
+    """
+    promised = datetime.now(timezone.utc) + timedelta(days=4, hours=6)
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_old_cancelled",
+            trial_ends_at=promised,
+            trial_consumed=True,
+            cancel_at_period_end=True,
+        )
+    )
+    await db.flush()
+
+    await client.post("/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"})
+
+    start_at = datetime.fromtimestamp(
+        fake_razorpay["subscription"]["start_at"], tz=timezone.utc
+    )
+    assert abs((start_at - promised).total_seconds()) < 2
+
+    from sqlalchemy import select
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.trial_ends_at == promised
+    assert sub.trial_consumed is True
+    # A prior cancel-at-period-end must not stick to the new subscription.
+    assert sub.cancel_at_period_end is False
+
+
+async def test_checkout_charges_immediately_once_the_trial_is_consumed(
+    db, user, client, fake_razorpay
+):
+    """Trials are once per customer: after the window has elapsed, a new
+    checkout must start charging immediately (`start_at ≈ now`), not grant
+    another free week.
+    """
+    before = datetime.now(timezone.utc)
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_old_cancelled",
+            trial_ends_at=before - timedelta(days=1),
+            trial_consumed=True,
+        )
+    )
+    await db.flush()
+
+    await client.post("/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"})
+
+    start_at = datetime.fromtimestamp(
+        fake_razorpay["subscription"]["start_at"], tz=timezone.utc
+    )
+    assert abs((start_at - before).total_seconds()) < 5
 
 
 async def test_checkout_reuses_an_existing_customer(db, user, client, fake_razorpay):

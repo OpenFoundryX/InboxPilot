@@ -24,7 +24,12 @@ from models.routines import (
     Routine,
 )
 from models.users import User
-from services.billing.entitlements import FEATURE_ROUTINE, REASON_LOCKED, check
+from services.billing.entitlements import (
+    FEATURE_CUSTOM_CATEGORIES,
+    FEATURE_ROUTINE,
+    REASON_LOCKED,
+    check,
+)
 from services.commands import rules
 from services.digest.briefing import compose_briefing
 from services.digest.catchup import compose_catchup
@@ -126,6 +131,17 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
         return f"{verb} VIP (domains={vip.domains}, addresses={vip.addresses}, keywords={vip.keywords})"
 
     if atype == "create_rule":
+        # Same plan gate as `POST /categorization/rules` — a chat command is a
+        # second entrance to the same capability (Starter's taxonomy is the
+        # built-in categories only, no custom rules), and the gate belongs
+        # inside `execute()`, not at each caller, for the same reason the
+        # `_now` routine actions below are gated here rather than at
+        # `api/v1/chat.py` and `workers/jobs/handle_command_email.py`.
+        decision = await check(db, uid, FEATURE_CUSTOM_CATEGORIES)
+        if not decision.allowed:
+            if decision.reason == REASON_LOCKED:
+                return "Your InboxPilot subscription isn't active, so I can't create that rule."
+            return "Custom rules are a Pro feature — upgrade your plan to unlock them."
         return rules.create_rule(user_id, action)
 
     if atype == "manage_routine":

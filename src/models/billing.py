@@ -80,6 +80,17 @@ class Subscription(UUIDMixin, TimestampMixin, Base):
     )
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Set once, the first time a trial is ever granted to this user (by
+    # `get_or_create_subscription` on row creation, or by the billing backfill
+    # migration for pre-existing accounts) and never cleared afterwards. Trials
+    # are once per customer: without this marker, `start_checkout` cannot tell
+    # "first-ever checkout, grant a trial" from "already had one" and will
+    # otherwise recompute `trial_ends_at = now + TRIAL_DAYS` on every call —
+    # which both stacks a second trial onto a still-running one (a backfilled
+    # user mid-trial) and, worse, lets `subscribe -> cancel before the first
+    # charge -> checkout again` mint an unlimited run of free weeks.
+    trial_consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     # Escape hatch for design partners and support goodwill. A comped row needs
     # no Razorpay record and never locks.
     comped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

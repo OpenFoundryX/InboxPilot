@@ -134,3 +134,29 @@ async def test_pro_runs_scan_deadlines_now(db, user, monkeypatch):
 
     assert calls == ["scan_deadlines"]
     assert result == "Scanned for deadlines — set 3 reminder(s)"
+
+
+async def test_starter_cannot_create_a_custom_rule_via_chat(db, user, monkeypatch):
+    """`create_rule` is a second entrance to the same Pro-only capability
+    `POST /categorization/rules` gates — Starter must be denied here too."""
+    await _subscribe(db, user, PLAN_STARTER)
+
+    def _boom(*a, **k):
+        raise AssertionError("rules.create_rule was called for a Starter user")
+
+    monkeypatch.setattr(handlers.rules, "create_rule", _boom)
+
+    result = await handlers.execute(
+        db,
+        user.id,
+        {
+            "type": "create_rule",
+            "match_type": "from",
+            "match_value": "boss@example.com",
+            "action": "assign",
+            "category_key": "work",
+        },
+    )
+
+    assert "Pro" in result
+    assert "subscription isn't active" not in result

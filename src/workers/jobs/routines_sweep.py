@@ -13,7 +13,6 @@ from sqlalchemy import select
 from core.database import run_async, with_worker_session
 from core.locks import single_run
 from core.logging import get_logger
-from integrations.composio import gmail
 from models.routines import (
     ROUTINE_BRIEFING,
     ROUTINE_CATCHUP,

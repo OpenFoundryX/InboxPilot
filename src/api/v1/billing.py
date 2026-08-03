@@ -7,7 +7,7 @@ and leaves card updates and plan changes to support.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -127,6 +127,14 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     No redirect URL is returned because Razorpay Checkout is a JS modal, not a
     hosted page — the client opens it against `subscription_id`.
     """
+    # Captured before `get_or_create_subscription` can create a row, so it's
+    # the one place that can tell "this call just created the trial row" from
+    # "a row already existed" — the two `trial_ends_at` outcomes below need to
+    # know exactly that. `existing_before` and whatever `get_or_create_
+    # subscription` hands back are the same ORM-identity row when one already
+    # existed, so reading `.trial_consumed`/`.trial_ends_at` off either after
+    # the call agrees; the only thing worth capturing early is the None-ness.
+    existing_before = await get_subscription(db, user.id)
     sub = await get_or_create_subscription(db, user.id, trial_days=settings.TRIAL_DAYS)
 
     # Refuse to run checkout again over a subscription that already has a
@@ -165,7 +173,29 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
             email=user.email, name=user.full_name
         )
 
-    trial_ends_at = now + timedelta(days=settings.TRIAL_DAYS)
+    if existing_before is None:
+        # First-ever checkout for this user: `get_or_create_subscription` just
+        # created the row above and already computed the correct trial window
+        # (and marked `trial_consumed`) — trust it rather than recomputing a
+        # second `now + TRIAL_DAYS` here, which would just be a second,
+        # slightly later "now".
+        # `get_or_create_subscription` always writes trial_ends_at on insert.
+        trial_ends_at = sub.trial_ends_at or now
+    elif sub.trial_consumed and sub.trial_ends_at and sub.trial_ends_at > now:
+        # A trial was already granted to this user — by a prior checkout, or
+        # by the billing backfill migration for a pre-existing account — and
+        # it is still running. Continue it exactly as already promised rather
+        # than restarting it: this is the fix for both "subscribe, cancel
+        # before the first charge, checkout again" (which must not mint a
+        # fresh 7 days every cycle) and a backfilled user mid-trial running
+        # their first real checkout (which must not become 10 days total by
+        # adding a new 7 on top of the days already elapsed).
+        trial_ends_at = sub.trial_ends_at
+    else:
+        # Trial already consumed and, if it ever ran, has elapsed. Trials are
+        # once per customer: this subscription starts charging immediately.
+        trial_ends_at = now
+
     created = razorpay_client.create_subscription(
         plan_id=razorpay_plan_id_for(payload.plan_id, payload.interval),
         customer_id=sub.razorpay_customer_id,
@@ -179,6 +209,15 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     sub.interval = payload.interval
     sub.currency = CURRENCY
     sub.trial_ends_at = trial_ends_at
+    sub.trial_consumed = True
+    # A prior cancellation must not survive into a new subscription — without
+    # this, a customer who cancels and later re-subscribes carries a
+    # permanent "cancels at period end" label on an actively billing account
+    # (see `SubscribeBanner`/Settings, which both read this flag verbatim).
+    # The Razorpay webhook path doesn't need a parallel reset: this is the
+    # only writer of the *new* subscription's row before any webhook for it
+    # can arrive, so there is nothing left for the webhook to clear.
+    sub.cancel_at_period_end = False
     await db.flush()
 
     plan = get_plan(payload.plan_id)

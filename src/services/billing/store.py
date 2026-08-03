@@ -33,6 +33,10 @@ async def get_or_create_subscription(
         currency=CURRENCY,
         status=STATUS_AUTHENTICATED,
         trial_ends_at=datetime.now(timezone.utc) + timedelta(days=trial_days),
+        # This row's creation IS the trial grant — mark it consumed now so a
+        # later checkout (see `api.v1.billing.start_checkout`) knows not to
+        # hand this user a second one.
+        trial_consumed=True,
     )
     db.add(sub)
     await db.flush()

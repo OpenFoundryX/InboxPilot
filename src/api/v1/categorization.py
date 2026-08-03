@@ -39,6 +39,8 @@ from schemas.categorization import (
     SettingsUpdate,
 )
 from services.auth.dependencies import get_current_user
+from services.billing.dependencies import EntitledUser
+from services.billing.entitlements import FEATURE_CUSTOM_CATEGORIES, REASON_LOCKED, check
 from services.categorization.store import (
     delete_category,
     get_category,
@@ -57,6 +59,26 @@ router = APIRouter(prefix="/categorization", tags=["categorization"])
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def _require_custom_categories(db: DbSession, user: User) -> None:
+    """Reject custom-category/rule mutations the plan doesn't include.
+
+    `entitlements.check` rather than `EntitledUser`/`require_entitled`: the
+    latter only answers "is this account live" and would let a locked-out-of-
+    the-feature-but-still-entitled Starter user straight through. Starter's
+    taxonomy is the built-in categories only — see the pricing matrix's
+    "Basic" cell and `GET /billing/plans`'s `custom_categories: false` — but
+    nothing enforced it until now.
+    """
+    decision = await check(db, user.id, FEATURE_CUSTOM_CATEGORIES)
+    if not decision.allowed:
+        detail = (
+            "Your subscription is not active."
+            if decision.reason == REASON_LOCKED
+            else "Custom categories and rules are a Pro feature — upgrade your plan to unlock them."
+        )
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, detail)
+
+
 @router.get("/categories", response_model=list[CategoryRead])
 async def list_categories(user: CurrentUser, db: DbSession) -> list[EmailCategory]:
     """The user's taxonomy in display order; seeds the built-ins on first call."""
@@ -73,6 +95,11 @@ async def update_category(
     category = await get_category(db, user.id, key)
     if category is None:
         raise HTTPException(404, f"no category with key {key!r}")
+
+    # Built-in categories stay editable on Starter (enable/disable, archive).
+    # Custom ones are a Pro entitlement — same gate as create.
+    if not category.is_builtin:
+        await _require_custom_categories(db, user)
 
     data = payload.model_dump(exclude_unset=True)
 
@@ -150,12 +177,16 @@ async def update_settings(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def reclassify(
-    payload: ReclassifyRequest, user: CurrentUser, db: DbSession
+    payload: ReclassifyRequest, user: EntitledUser, db: DbSession
 ) -> ReclassifyResponse:
     """Queue a re-run of categorization over recent mail.
 
     Mail that already carries one of the user's category labels is left alone,
     so this is safe to call repeatedly after taxonomy edits.
+
+    Gated on `EntitledUser`: this fans out `classify_new_email` (an LLM call)
+    per matched message, and each one now also chains an auto-draft attempt —
+    a locked account calling this repeatedly had no cap on either.
     """
     settings_row = await get_or_create_settings(db, user.id)
     if not settings_row.is_enabled:
@@ -185,6 +216,7 @@ async def create_category(
     label does not exist would fail every classification that picked it, so the
     Composio failure has to surface here rather than in a worker.
     """
+    await _require_custom_categories(db, user)
     existing = await get_or_create_categories(db, user.id)
 
     gmail_label = payload.display_name.strip().casefold()
@@ -251,6 +283,7 @@ async def create_category(
 @router.delete("/categories/{key}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_category(key: str, user: CurrentUser, db: DbSession) -> None:
     """Delete a custom category. Its Gmail label is left in the user's mailbox."""
+    await _require_custom_categories(db, user)
     await get_or_create_categories(db, user.id)
 
     category = await get_category(db, user.id, key)
@@ -284,6 +317,7 @@ async def get_rules(user: CurrentUser, db: DbSession) -> list[CategorizationRule
 async def create_rule(
     payload: RuleCreate, user: CurrentUser, db: DbSession
 ) -> CategorizationRule:
+    await _require_custom_categories(db, user)
     await get_or_create_categories(db, user.id)
     await _check_rule_target(db, user.id, payload.action, payload.category_key)
 
@@ -305,6 +339,7 @@ async def create_rule(
 async def update_rule(
     rule_id: uuid.UUID, payload: RuleUpdate, user: CurrentUser, db: DbSession
 ) -> CategorizationRule:
+    await _require_custom_categories(db, user)
     rule = await get_rule(db, user.id, rule_id)
     if rule is None:
         raise HTTPException(404, f"no rule with id {rule_id}")
@@ -323,6 +358,7 @@ async def update_rule(
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_rule(rule_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    await _require_custom_categories(db, user)
     rule = await get_rule(db, user.id, rule_id)
     if rule is None:
         raise HTTPException(404, f"no rule with id {rule_id}")
@@ -334,6 +370,7 @@ async def reorder_rules(
     payload: RuleReorder, user: CurrentUser, db: DbSession
 ) -> list[CategorizationRule]:
     """Rewrite priorities to match the given order. Must list every rule exactly once."""
+    await _require_custom_categories(db, user)
     rules = await list_rules(db, user.id)
     by_id = {rule.id: rule for rule in rules}
 

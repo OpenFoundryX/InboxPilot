@@ -69,6 +69,11 @@ async def add_bot_seconds(
         .returning(UsageCounter.bot_seconds_used)
         .execution_options(synchronize_session=False)
     )
+    # Sharp edge (latent): this assignment marks `counter` dirty in the ORM
+    # session; an unrelated flush/commit on this same session before the
+    # caller's own final commit would re-issue a plain SET of this stale
+    # Python value instead of another atomic add, reopening the clobber
+    # window above. Not reachable from any call site today.
     counter.bot_seconds_used = (await db.execute(stmt)).scalar_one()
     return counter
 
@@ -91,5 +96,13 @@ async def add_drafts(
         .returning(UsageCounter.drafts_generated)
         .execution_options(synchronize_session=False)
     )
+    # Same latent sharp edge as `add_bot_seconds` above: this assignment marks
+    # `counter` dirty, so an unrelated flush/commit on this session before the
+    # caller's own commit would re-issue a plain (non-atomic) SET instead of
+    # another SQL add. `services.drafts.create._meter_draft` is now a caller
+    # of this function (each draft meters itself, once, at creation) — it
+    # uses its own single-purpose `with_worker_session` today, so this isn't
+    # reachable yet, but it's the kind of caller that could make it so if a
+    # future change shares one session across more than this one write.
     counter.drafts_generated = (await db.execute(stmt)).scalar_one()
     return counter
