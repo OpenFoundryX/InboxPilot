@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
+from core.plans import get_plan
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
 from models.meetings import (
@@ -21,6 +22,8 @@ from models.meetings import (
 )
 from models.reminders import ORIGIN_MEETING, Reminder
 from models.users import User
+from services.billing.access import effective_plan_id
+from services.billing.store import get_subscription
 from services.billing.usage import add_bot_seconds
 from services.meetings.recap import compose_recap
 from services.meetings.recording import resolve_recording_url
@@ -71,6 +74,19 @@ async def _process(db, meeting_id: str) -> dict:
         return {"skipped": "already delivered"}
     if not meeting.bot_id:
         return {"skipped": "no bot"}
+
+    # Stamp the windows this meeting is grandfathered against, once. Retention
+    # pruning must not let a later plan change (a downgrade in particular)
+    # retroactively shorten a deadline that was already fixed, so it needs to
+    # know what the account's plan actually was right now, at capture time —
+    # not what it happens to be whenever the sweep gets around to this row.
+    # Guarded on `is None` so a retry can't overwrite an already-stamped value
+    # with whatever the plan happens to be by the time it retries.
+    if meeting.retention_video_days is None:
+        sub = await get_subscription(db, meeting.user_id)
+        entitlements = get_plan(effective_plan_id(sub)).entitlements
+        meeting.retention_video_days = entitlements.video_retention_days
+        meeting.retention_transcript_days = entitlements.transcript_retention_days
 
     # Claim the video first, before the transcript can end this run early: a
     # call where nobody spoke still produced a recording worth watching. It

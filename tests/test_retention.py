@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.plans import INTERVAL_MONTHLY, PLAN_STARTER
 from integrations.meetingbot.base import RecordingMedia
-from models.billing import STATUS_ACTIVE, Subscription
+from models.billing import STATUS_ACTIVE, STATUS_CANCELLED, Subscription
 from models.meetings import STATUS_PROCESSED, Meeting
 from services.meetings import recording as recording_module
 from workers.jobs.retention_sweep import prune_user
@@ -223,3 +223,130 @@ async def test_resolve_recording_url_still_refreshes_a_stale_link_when_not_prune
 
     assert result == "https://cdn.example/fresh.mp4"
     assert meeting.recording_url == "https://cdn.example/fresh.mp4"
+
+
+# --- Ruling 1: pruning pauses entirely while an account is locked ---------
+
+
+async def test_locked_user_with_no_subscription_is_not_pruned(db, user):
+    """No subscription row means locked (`resolve_access(None, now) ==
+    ACCESS_LOCKED`), not "give them Starter's windows". A merely-locked account
+    must not have its data destroyed faster than a paying one's.
+    """
+    meeting = await _meeting(db, user, days_ago=200)
+
+    result = await prune_user(db, user.id, NOW)
+    await db.refresh(meeting)
+
+    assert result == {"videos": 0, "transcripts": 0}
+    assert meeting.recording_id == "rec_1"
+    assert meeting.recording_url == "https://cdn.example/v.mp4"
+    assert meeting.transcript == "hello"
+
+
+async def test_locked_user_with_a_terminal_subscription_is_not_pruned(db, user):
+    """A `cancelled` (or `halted`/`expired`) subscription row is equally locked
+    — the same rule must apply whether the row is missing or terminal.
+    """
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_STARTER,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+        )
+    )
+    await db.flush()
+    meeting = await _meeting(db, user, days_ago=200)
+
+    result = await prune_user(db, user.id, NOW)
+    await db.refresh(meeting)
+
+    assert result == {"videos": 0, "transcripts": 0}
+    assert meeting.recording_id == "rec_1"
+    assert meeting.transcript == "hello"
+
+
+# --- Ruling 2: existing recordings keep the window they were made under ---
+
+
+async def test_meeting_recorded_under_pro_survives_a_downgrade_to_starter(db, user):
+    """A meeting recorded while the user was on Pro (30-day video window) keeps
+    that window even after the account downgrades to Starter (7-day window) —
+    the plan a meeting was captured under grandfathers it, a later downgrade
+    does not retroactively shorten an already-fixed deadline.
+    """
+    await _starter(db, user)  # current plan, post-downgrade
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        status=STATUS_PROCESSED,
+        starts_at=NOW - timedelta(days=20),  # past Starter's 7d, inside Pro's 30d
+        recording_id="rec_1",
+        recording_url="https://cdn.example/v.mp4",
+        transcript="hello",
+        retention_video_days=30,
+        retention_transcript_days=365,
+    )
+    db.add(meeting)
+    await db.flush()
+
+    result = await prune_user(db, user.id, NOW)
+    await db.refresh(meeting)
+
+    assert result == {"videos": 0, "transcripts": 0}
+    assert meeting.recording_id == "rec_1"
+    assert meeting.transcript == "hello"
+
+
+async def test_meeting_recorded_after_the_downgrade_prunes_on_starters_schedule(db, user):
+    """A meeting captured after the downgrade was stamped with Starter's own
+    windows at processing time, so it prunes on Starter's schedule like any
+    other Starter meeting.
+    """
+    await _starter(db, user)
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        status=STATUS_PROCESSED,
+        starts_at=NOW - timedelta(days=8),
+        recording_id="rec_1",
+        recording_url="https://cdn.example/v.mp4",
+        transcript="hello",
+        retention_video_days=7,
+        retention_transcript_days=90,
+    )
+    db.add(meeting)
+    await db.flush()
+
+    result = await prune_user(db, user.id, NOW)
+    await db.refresh(meeting)
+
+    assert result == {"videos": 1, "transcripts": 0}
+    assert meeting.recording_id is None
+
+
+async def test_legacy_meeting_with_null_retention_columns_uses_the_current_plan(db, user):
+    """A row from before this column existed has no stored window at all — the
+    only sane fallback is the plan the account is on right now.
+    """
+    await _starter(db, user)
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        status=STATUS_PROCESSED,
+        starts_at=NOW - timedelta(days=8),
+        recording_id="rec_1",
+        recording_url="https://cdn.example/v.mp4",
+        transcript="hello",
+        retention_video_days=None,
+        retention_transcript_days=None,
+    )
+    db.add(meeting)
+    await db.flush()
+
+    result = await prune_user(db, user.id, NOW)
+    await db.refresh(meeting)
+
+    assert result == {"videos": 1, "transcripts": 0}
+    assert meeting.recording_id is None

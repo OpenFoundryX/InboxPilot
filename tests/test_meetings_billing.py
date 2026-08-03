@@ -169,6 +169,42 @@ async def test_reprocessing_a_meeting_meters_once(db, user, monkeypatch):
     assert second.bot_seconds_used == first.bot_seconds_used
 
 
+async def test_processing_a_meeting_stamps_the_current_plans_retention_windows(
+    db, user, monkeypatch
+):
+    """Retention pruning grandfathers a meeting against the window it was
+    captured under, which only works if processing actually stamps that
+    window at the time — this is where `retention_video_days`/
+    `retention_transcript_days` get their one and only write.
+    """
+    from workers.jobs import process_meeting
+
+    monkeypatch.setattr(process_meeting, "summarize", lambda *a, **k: None)
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_ACTIVE,
+        )
+    )
+    meeting = Meeting(
+        user_id=user.id,
+        meeting_url="https://meet.example/x",
+        bot_id="bot-1",
+        joined_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        transcript="Alice: hello there",
+    )
+    db.add(meeting)
+    await db.flush()
+
+    await process_meeting._process(db, str(meeting.id))
+
+    assert meeting.retention_video_days == 30
+    assert meeting.retention_transcript_days == 365
+
+
 async def test_join_now_books_no_bot_for_a_locked_user(db, user, monkeypatch):
     """The pasted-link path must not be a way to dodge the quota gate.
 

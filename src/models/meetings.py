@@ -108,6 +108,23 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # The retention windows in force when this meeting was captured, in days.
+    # Written once at processing time from the plan the user was on then, and
+    # never touched by a later plan change — a later downgrade must not shorten
+    # the deadline for a meeting recorded under a more generous plan. Null on
+    # legacy rows (recorded before this column existed) and on rows that never
+    # reached processing; the prune falls back to the *current* plan for those,
+    # since there is nothing else to grandfather them against.
+    #
+    # Storing the resolved day counts rather than a plan id is deliberate:
+    # `core.plans.PLANS` is a plain dict in code, so a later edit to what
+    # "starter" or "pro" means would otherwise retroactively move the deadline
+    # for every meeting recorded under that plan id, including ones whose
+    # actual guarantee was already fixed. These two columns are the guarantee
+    # itself, frozen at capture time.
+    retention_video_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retention_transcript_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     decisions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
