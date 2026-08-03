@@ -22,9 +22,18 @@ def _client() -> razorpay.Client:
 
 
 def create_customer(*, email: str, name: str | None = None) -> str:
-    """Create a Razorpay customer and return its id."""
+    """Create a Razorpay customer and return its id.
+
+    `fail_existing` must be the string `"0"`, not the integer 0 — Razorpay's
+    API documents it as a string, and an integer 0 is treated as omitted
+    (default `"1"`), which throws "Customer already exists for the merchant"
+    on retry. That retry path is common here: checkout commits the local
+    trial row, then calls Razorpay; if subscription creation fails after the
+    customer was created, the next attempt has no `razorpay_customer_id` on
+    our row but the email already exists at Razorpay.
+    """
     customer = _client().customer.create(
-        {"email": email, "name": name or email, "fail_existing": 0}
+        {"email": email, "name": name or email, "fail_existing": "0"}
     )
     return customer["id"]
 
