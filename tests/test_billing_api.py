@@ -155,6 +155,69 @@ async def test_checkout_rejects_an_unknown_interval(client):
     assert response.status_code == 422
 
 
+async def test_checkout_rejects_when_a_live_subscription_already_exists(
+    db, user, client, fake_razorpay
+):
+    """A second checkout over an active subscription must not orphan the first.
+
+    Without a guard, this would call `create_subscription` again and overwrite
+    `razorpay_subscription_id` — the original subscription keeps billing at
+    Razorpay with no row in our database pointing at it anymore.
+    """
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_ACTIVE,
+            razorpay_subscription_id="sub_existing_live",
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 409
+    # No second Razorpay subscription was created.
+    assert "subscription" not in fake_razorpay
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_existing_live"
+
+
+async def test_checkout_leaves_a_retryable_trial_row_if_razorpay_fails_after_commit(
+    db, user, client, monkeypatch
+):
+    """The trial row is committed before any Razorpay call, so a failure in
+    either call must not lose it or leave it half-written: it should come back
+    exactly as `get_or_create_subscription` first wrote it (null Razorpay ids),
+    ready for `get_or_create_subscription` to hand back unchanged on retry —
+    the same shape a backfilled, never-checked-out account already has.
+    """
+    from sqlalchemy import select
+
+    from services.billing import razorpay_client
+
+    def _boom(*, email, name=None):
+        raise RuntimeError("razorpay unreachable")
+
+    monkeypatch.setattr(razorpay_client, "create_customer", _boom)
+
+    with pytest.raises(RuntimeError):
+        await client.post(
+            "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+        )
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub is not None
+    assert sub.razorpay_customer_id is None
+    assert sub.razorpay_subscription_id is None
+    assert sub.plan_id == PLAN_PRO  # the store's default, untouched by the failed checkout
+
+
 async def test_cancel_requires_a_subscription(client, fake_razorpay):
     response = await client.post("/v1/billing/cancel")
     assert response.status_code == 409

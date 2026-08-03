@@ -6,6 +6,7 @@ itself — the one action users must be able to take without contacting anyone �
 and leaves card updates and plan changes to support.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -21,6 +22,7 @@ from core.plans import (
     get_plan,
     razorpay_plan_id_for,
 )
+from models.billing import STATUS_CANCELLED, STATUS_COMPLETED, STATUS_EXPIRED, Subscription
 from models.users import User
 from schemas.billing import (
     CheckoutIn,
@@ -47,6 +49,48 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 MONTHLY_CYCLES = 120
 ANNUAL_CYCLES = 10
 
+# Statuses in which Razorpay's own record of the subscription is already
+# finished. Starting a fresh checkout from one of these cannot orphan a live
+# mandate — there is nothing left running to abandon. Every other status
+# (including `created`, `halted`, `paused`) is treated as potentially still
+# live: `/checkout` refuses to run again once `razorpay_subscription_id` is
+# set and the row isn't in one of these, rather than risk creating a second
+# subscription that keeps billing with nothing pointing at it. See
+# `test_checkout_rejects_when_a_live_subscription_already_exists`.
+_TERMINAL_SUBSCRIPTION_STATUSES = frozenset({STATUS_CANCELLED, STATUS_EXPIRED, STATUS_COMPLETED})
+
+
+async def _subscription_out(
+    sub: Subscription | None, user_id: uuid.UUID, db: AsyncSession
+) -> SubscriptionOut:
+    """Build the response body from a subscription row already in hand.
+
+    Callers that already hold `sub` (e.g. `cancel`, right after mutating it)
+    should use this instead of re-fetching through `current_subscription` —
+    that would re-run `get_subscription` for a row already sitting in memory.
+    """
+    now = datetime.now(timezone.utc)
+    counter = await get_or_create_counter(db, user_id, now)
+    entitlements = get_plan(effective_plan_id(sub)).entitlements
+
+    return SubscriptionOut(
+        access=resolve_access(sub, now),
+        plan_id=sub.plan_id if sub else None,
+        interval=sub.interval if sub else None,
+        status=sub.status if sub else None,
+        trial_ends_at=sub.trial_ends_at if sub else None,
+        current_period_end=sub.current_period_end if sub else None,
+        cancel_at_period_end=sub.cancel_at_period_end if sub else False,
+        comped=sub.comped if sub else False,
+        has_payment_method=bool(sub and sub.razorpay_customer_id),
+        usage=UsageOut(
+            bot_hours_used=round(counter.bot_seconds_used / 3600, 2),
+            bot_hours_included=entitlements.bot_hours_per_month,
+            drafts_used=counter.drafts_generated,
+            drafts_included=entitlements.drafts_per_month,
+        ),
+    )
+
 
 @router.get("/plans", response_model=PlansOut)
 async def list_plans() -> PlansOut:
@@ -72,28 +116,8 @@ async def list_plans() -> PlansOut:
 
 @router.get("/subscription", response_model=SubscriptionOut)
 async def current_subscription(user: CurrentUser, db: Db) -> SubscriptionOut:
-    now = datetime.now(timezone.utc)
     sub = await get_subscription(db, user.id)
-    counter = await get_or_create_counter(db, user.id, now)
-    entitlements = get_plan(effective_plan_id(sub)).entitlements
-
-    return SubscriptionOut(
-        access=resolve_access(sub, now),
-        plan_id=sub.plan_id if sub else None,
-        interval=sub.interval if sub else None,
-        status=sub.status if sub else None,
-        trial_ends_at=sub.trial_ends_at if sub else None,
-        current_period_end=sub.current_period_end if sub else None,
-        cancel_at_period_end=sub.cancel_at_period_end if sub else False,
-        comped=sub.comped if sub else False,
-        has_payment_method=bool(sub and sub.razorpay_customer_id),
-        usage=UsageOut(
-            bot_hours_used=round(counter.bot_seconds_used / 3600, 2),
-            bot_hours_included=entitlements.bot_hours_per_month,
-            drafts_used=counter.drafts_generated,
-            drafts_included=entitlements.drafts_per_month,
-        ),
-    )
+    return await _subscription_out(sub, user.id, db)
 
 
 @router.post("/checkout", response_model=CheckoutOut)
@@ -103,9 +127,39 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     No redirect URL is returned because Razorpay Checkout is a JS modal, not a
     hosted page — the client opens it against `subscription_id`.
     """
-    now = datetime.now(timezone.utc)
     sub = await get_or_create_subscription(db, user.id, trial_days=settings.TRIAL_DAYS)
 
+    # Refuse to run checkout again over a subscription that already has a
+    # Razorpay record which isn't finished. Without this, a double-click, a
+    # back-button resubmit, or a retry after a slow response calls
+    # `create_subscription` a second time and overwrites
+    # `razorpay_subscription_id` — silently orphaning the first subscription,
+    # which keeps billing with no row in our database pointing at it anymore.
+    # Rejecting outright (rather than quietly returning the existing
+    # subscription) also keeps this from becoming an undocumented plan-change
+    # path, which the brief explicitly puts out of v1 scope.
+    if sub.razorpay_subscription_id and sub.status not in _TERMINAL_SUBSCRIPTION_STATUSES:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You already have a subscription. Cancel it before starting a new one.",
+        )
+
+    # Commit the trial row (and the guard's read of it) before making any
+    # Razorpay calls. `get_or_create_subscription` only flushes, and
+    # `get_db` commits solely after this handler returns — so without this,
+    # the freshly-inserted row stays uncommitted for the full round-trip time
+    # of the two Razorpay calls below. A concurrent duplicate request for the
+    # same first-time user would then pass the "no existing row" read before
+    # either side commits, and both would call Razorpay before the database
+    # ever rejects the second INSERT — leaving the loser's Razorpay customer
+    # and subscription created but referenced by no row (see
+    # `services/billing/store.py`'s `get_or_create_subscription`). Committing
+    # here shrinks the race back to the plain read-then-insert window Task 4
+    # already accepted, and stops holding the connection open for the
+    # duration of two external HTTP calls.
+    await db.commit()
+
+    now = datetime.now(timezone.utc)
     if not sub.razorpay_customer_id:
         sub.razorpay_customer_id = razorpay_client.create_customer(
             email=user.email, name=user.full_name
@@ -158,4 +212,4 @@ async def cancel(user: CurrentUser, db: Db) -> SubscriptionOut:
     sub.cancel_at_period_end = True
     await db.flush()
 
-    return await current_subscription(user, db)
+    return await _subscription_out(sub, user.id, db)
