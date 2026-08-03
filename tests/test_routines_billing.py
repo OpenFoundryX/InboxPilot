@@ -43,8 +43,6 @@ async def test_locked_user_runs_nothing(db, user):
 
 async def test_sweep_does_not_run_a_routine_the_plan_excludes(db, user, monkeypatch):
     """The gate must be wired into _sweep, not merely available to it."""
-    from datetime import datetime as real_datetime
-
     from models.routines import Routine
     from workers.jobs import routines_sweep
 
@@ -55,7 +53,8 @@ async def test_sweep_does_not_run_a_routine_the_plan_excludes(db, user, monkeypa
     # UTC) for a user with no settings row yet. The routine's run_time must
     # be expressed in that same zone or the sweep's local-time check will
     # never match "now" and the test would pass without exercising the gate.
-    now_local = real_datetime.now(timezone.utc).astimezone(ZoneInfo(app_settings.MAILMAN_DEFAULT_TZ))
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(ZoneInfo(app_settings.MAILMAN_DEFAULT_TZ))
     db.add(
         Routine(
             user_id=user.id,
@@ -78,14 +77,13 @@ async def test_sweep_does_not_run_a_routine_the_plan_excludes(db, user, monkeypa
 
 
 async def test_sweep_runs_a_routine_the_plan_allows(db, user, monkeypatch):
-    from datetime import datetime as real_datetime
-
     from models.routines import Routine
     from workers.jobs import routines_sweep
 
     await _subscribe(db, user, PLAN_STARTER)
 
-    now_local = real_datetime.now(timezone.utc).astimezone(ZoneInfo(app_settings.MAILMAN_DEFAULT_TZ))
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(ZoneInfo(app_settings.MAILMAN_DEFAULT_TZ))
     db.add(
         Routine(
             user_id=user.id,

@@ -16,8 +16,15 @@ from datetime import datetime, timezone
 
 from models.mailman import MODE_CUSTOM_DAILY, MODE_INTERVAL, MODE_TIMES
 from models.reminders import ORIGIN_MANUAL, Reminder
-from models.routines import ROUTINE_BRIEFING, Routine
+from models.routines import (
+    ROUTINE_BRIEFING,
+    ROUTINE_CATCHUP,
+    ROUTINE_DEADLINE_SCAN,
+    ROUTINE_INVOICES,
+    Routine,
+)
 from models.users import User
+from services.billing.entitlements import FEATURE_ROUTINE, REASON_LOCKED, check
 from services.commands import rules
 from services.digest.briefing import compose_briefing
 from services.digest.catchup import compose_catchup
@@ -30,6 +37,19 @@ from services.notify import send_to_inbox
 log = get_logger(__name__)
 
 _MODES = {MODE_INTERVAL, MODE_TIMES, MODE_CUSTOM_DAILY}
+
+# "Run this routine right now" chat/email commands are a second entrance to
+# the same routine types the scheduled sweep (workers/jobs/routines_sweep.py)
+# gates — a user asking for their invoice summary by name must not get an
+# answer their plan wouldn't let the sweep send them. One dict + one gate
+# below gets all four, so a new "_now" action added later can't silently
+# bypass it the way these four already had.
+_NOW_ACTION_ROUTINES = {
+    "send_briefing_now": ROUTINE_BRIEFING,
+    "catch_up_now": ROUTINE_CATCHUP,
+    "summarize_invoices_now": ROUTINE_INVOICES,
+    "scan_deadlines_now": ROUTINE_DEADLINE_SCAN,
+}
 _ROUTINE_FIELDS = {
     "delivery_mode",
     "interval_minutes",
@@ -125,6 +145,30 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
         state = "on" if row.enabled else "off"
         when = f"at {row.run_time}" + ("" if row.weekday is None else f" (weekday {row.weekday})")
         return f"Routine '{rtype}' {state} {when}"
+
+    if atype in _NOW_ACTION_ROUTINES:
+        decision = await check(
+            db,
+            uid,
+            FEATURE_ROUTINE,
+            routine_type=_NOW_ACTION_ROUTINES[atype],
+            now=datetime.now(timezone.utc),
+        )
+        if not decision.allowed:
+            log.info(
+                "commands.skipped_no_entitlement",
+                type=atype,
+                user_id=user_id,
+                reason=decision.reason,
+            )
+            # This path is user-initiated and conversational (someone asked a
+            # direct question), unlike the silent sweep skip — so it gets a
+            # direct answer rather than silence, worded as a plan limitation
+            # rather than a failure. Locked and out-of-plan read differently
+            # so a paying-but-wrong-tier user isn't told to "subscribe" again.
+            if decision.reason == REASON_LOCKED:
+                return "Your InboxPilot subscription isn't active, so I can't run this right now."
+            return "This is a Pro feature — upgrade your plan to unlock it."
 
     if atype == "send_briefing_now":
         settings = await get_or_create_settings(db, uid)
