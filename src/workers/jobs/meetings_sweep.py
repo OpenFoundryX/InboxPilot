@@ -26,6 +26,7 @@ from models.meetings import (
     MeetingSettings,
 )
 from models.users import User
+from services.billing.entitlements import FEATURE_MEETING_BOT, check
 from services.meetings.rules import skip_reason
 from services.meetings.store import (
     get_or_create_settings,
@@ -107,6 +108,18 @@ async def _sweep_user(db, settings_row: MeetingSettings) -> tuple[int, int]:
 
     scheduled = 0
     for meeting in await list_awaiting_bots(db, user_id):
+        decision = await check(db, user_id, FEATURE_MEETING_BOT, now=now)
+        if not decision.allowed:
+            # Out of quota or unsubscribed. The meeting stays tracked and still
+            # shows in the dashboard — it just goes unattended, rather than the
+            # user's calendar sync appearing broken.
+            log.info(
+                "meetings.bot_withheld",
+                user_id=str(user_id),
+                meeting_id=str(meeting.id),
+                reason=decision.reason,
+            )
+            break
         if _book_bot(meeting, settings_row.bot_name, now):
             scheduled += 1
 
@@ -149,6 +162,9 @@ def _book_bot(meeting: Meeting, bot_name: str, now: datetime) -> bool:
 
     meeting.bot_id = handle.bot_id
     meeting.status = STATUS_SCHEDULED
+    # Clears any earlier "bot withheld: ..." note from a quota/lock denial
+    # (see `_join_now`) now that a bot is actually booked.
+    meeting.status_detail = None
     log.info(
         "meetings.bot_scheduled",
         meeting_id=str(meeting.id),
@@ -181,7 +197,31 @@ async def _join_now(db, meeting_id: str) -> dict:
     meeting = await db.get(Meeting, uuid.UUID(meeting_id))
     if not meeting or meeting.bot_id:
         return {"skipped": "missing or already booked"}
+
+    now = datetime.now(timezone.utc)
+    decision = await check(db, meeting.user_id, FEATURE_MEETING_BOT, now=now)
+    if not decision.allowed:
+        # Unlike the sweep, this path is user-initiated: doing nothing with no
+        # trace would look like the join silently failed. The row stays
+        # STATUS_PENDING with no bot_id, which `list_awaiting_bots` already
+        # treats as eligible (ad-hoc rows have no start time and are always
+        # picked up), so the next minute's sweep retries it the moment quota
+        # or plan allows — the same withheld-not-failed treatment the sweep
+        # gives calendar meetings. `status_detail` is set so the caller (who
+        # only ever sees this via GET /meetings/{id}, since the API enqueues
+        # this task with `.delay()` and never waits on its result) has
+        # somewhere to read the reason.
+        meeting.status_detail = f"bot withheld: {decision.reason}"
+        log.info(
+            "meetings.bot_withheld",
+            user_id=str(meeting.user_id),
+            meeting_id=meeting_id,
+            reason=decision.reason,
+        )
+        await db.commit()
+        return {"booked": False, "meeting_id": meeting_id, "reason": decision.reason}
+
     settings_row = await get_or_create_settings(db, meeting.user_id)
-    booked = _book_bot(meeting, settings_row.bot_name, datetime.now(timezone.utc))
+    booked = _book_bot(meeting, settings_row.bot_name, now)
     await db.commit()
     return {"booked": booked, "meeting_id": meeting_id}

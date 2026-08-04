@@ -84,6 +84,10 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     bot_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     recording_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How long the bot was actually in the call, from the provider's payload.
+    # `joined_at` alone cannot answer this, and bot-hours cannot be metered
+    # without it.
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # A link to the video, never the video. Providers sign these links for a few
     # hours, so this pair is a cache that knows its own deadline — the durable
@@ -93,6 +97,33 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     recording_url_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Set once, by retention pruning, the moment `recording_id`/`recording_url`
+    # are cleared for being past the plan's video window. Never cleared again.
+    # This is what tells `resolve_recording_url` "deliberately removed" apart
+    # from "never had a recording" — both look like `recording_id is None`
+    # otherwise, and without this a re-resolve would just fetch the video back
+    # from the provider and undo the prune on the next page view.
+    recording_pruned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # The retention windows in force when this meeting was captured, in days.
+    # Written once at processing time from the plan the user was on then, and
+    # never touched by a later plan change — a later downgrade must not shorten
+    # the deadline for a meeting recorded under a more generous plan. Null on
+    # legacy rows (recorded before this column existed) and on rows that never
+    # reached processing; the prune falls back to the *current* plan for those,
+    # since there is nothing else to grandfather them against.
+    #
+    # Storing the resolved day counts rather than a plan id is deliberate:
+    # `core.plans.PLANS` is a plain dict in code, so a later edit to what
+    # "starter" or "pro" means would otherwise retroactively move the deadline
+    # for every meeting recorded under that plan id, including ones whose
+    # actual guarantee was already fixed. These two columns are the guarantee
+    # itself, frozen at capture time.
+    retention_video_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retention_transcript_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)

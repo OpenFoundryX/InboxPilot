@@ -13,6 +13,7 @@ from models.base import Base
 # Add new model modules here as they are created.
 from models import activity as activity_models  # noqa: F401
 from models import auth as auth_models  # noqa: F401
+from models import billing as billing_models  # noqa: F401
 from models import categorization as categorization_models  # noqa: F401
 from models import chat as chat_models  # noqa: F401
 from models import mailman as mailman_models  # noqa: F401

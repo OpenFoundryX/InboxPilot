@@ -17,6 +17,7 @@ from integrations.composio import gmail
 from schemas.email import EmailSummary
 from services.drafts.context import DraftConfig
 from services.drafts.create import draft_follow_up
+from services.drafts.sweep import effective_limit
 
 log = get_logger(__name__)
 
@@ -97,9 +98,27 @@ def find_quiet_threads(
     return quiet
 
 
-def sweep_user(user_id: str, config: DraftConfig, user_name: str | None = None) -> int:
-    """Draft follow-ups for one user. Returns how many were created."""
+def sweep_user(
+    user_id: str,
+    config: DraftConfig,
+    user_name: str | None = None,
+    *,
+    budget: int | None = None,
+) -> int:
+    """Draft follow-ups for one user. Returns how many were created.
+
+    `budget` is the user's remaining monthly draft quota (see
+    `workers.jobs.drafts_sweep.remaining_drafts`); without capping against it,
+    a user near their limit could take a full `MAX_PER_SWEEP` batch of nudges
+    and land over quota, the same exactness problem `sweep.sweep_user` guards
+    against. `effective_limit` is reused from there, but with this module's
+    own `MAX_PER_SWEEP` (5, not `sweep.py`'s 10) passed explicitly.
+    """
     if not config.follow_up_enabled:
+        return 0
+
+    limit = effective_limit(budget, MAX_PER_SWEEP)
+    if limit <= 0:
         return 0
 
     candidates = find_quiet_threads(user_id, config.follow_up_days)
@@ -108,7 +127,7 @@ def sweep_user(user_id: str, config: DraftConfig, user_name: str | None = None) 
 
     created = 0
     for email, days_quiet in candidates:
-        if created >= MAX_PER_SWEEP:
+        if created >= limit:
             break
         try:
             draft_id = draft_follow_up(

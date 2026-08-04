@@ -36,7 +36,17 @@ async def resolve_recording_url(db: AsyncSession, meeting: Meeting) -> str | Non
 
     Safe to call repeatedly — a re-run refreshes an expired link and otherwise
     changes nothing.
+
+    Returns None without calling the provider once retention pruning has run
+    on this meeting (`recording_pruned_at` set). Without this check, a pruned
+    meeting still has `bot_id` set and a status in `MEDIA_READY_STATUSES` —
+    the only thing pruning clears is `recording_id`/`recording_url` — so the
+    logic below would treat it exactly like a video that simply hasn't been
+    fetched yet, fetch it fresh from the provider, and write it straight back
+    onto the row. That would undo the prune on the very next page view.
     """
+    if meeting.recording_pruned_at is not None:
+        return None
     if not meeting.bot_id:
         return None
     if meeting.recording_url and _is_fresh(meeting.recording_url_expires_at):

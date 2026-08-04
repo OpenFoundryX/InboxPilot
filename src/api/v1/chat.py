@@ -40,6 +40,7 @@ from schemas.chat import (
     MessageRead,
 )
 from services.auth.dependencies import get_current_user
+from services.billing.dependencies import EntitledUser
 from services.chat import engine, store
 from services.chat.sources.email_source import EmailRetriever
 from services.commands.handlers import execute as execute_action
@@ -96,8 +97,16 @@ async def delete_conversation(conversation_id: uuid.UUID, user: CurrentUser, db:
 
 
 @router.post("/ask")
-async def ask(payload: AskRequest, user: CurrentUser) -> StreamingResponse:
-    """Answer one turn, streamed as SSE."""
+async def ask(payload: AskRequest, user: EntitledUser) -> StreamingResponse:
+    """Answer one turn, streamed as SSE.
+
+    Gated on `EntitledUser`: every turn is an uncapped LLM call, and a locked
+    account calling this in a loop had no gate and no cost. Read endpoints
+    (`/conversations*`) and the actions a past turn already proposed
+    (`/messages/{id}/confirm`) stay open — the point is to stop *new* answers
+    from being generated, not to hide history or block actions that are
+    already individually gated in `services.commands.handlers.execute`.
+    """
     return StreamingResponse(
         _ask_stream(user_id=user.id, account_email=user.email, payload=payload),
         media_type="text/event-stream",

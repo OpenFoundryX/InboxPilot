@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from api.v1 import (
     auth,
+    billing,
     categorization,
     chat,
     dashboard,
@@ -27,3 +28,4 @@ api_router.include_router(chat.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(meetings.router)
 api_router.include_router(webhooks.router)
+api_router.include_router(billing.router)

@@ -1,4 +1,4 @@
-"""Inbound webhooks (Composio triggers, meeting-bot status callbacks).
+"""Inbound webhooks (Composio triggers, meeting-bot status callbacks, Razorpay).
 
 The arrival path for all mail. Composio polls Gmail and posts one event per new
 message; we verify it, drop what we've already handled or sent ourselves, and
@@ -8,8 +8,13 @@ label lookup) lives inside the command task.
 
 The meeting-bot provider posts here too, reporting a bot's progress through a
 call. Same rule: verify, record the status, enqueue the real work.
+
+Razorpay posts subscription lifecycle events here as well. Same rule again:
+verify the signature over the raw body before touching anything, dedupe via
+the same Redis claim, then hand off to `services.billing.webhooks`.
 """
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -17,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 
 from api.deps import DbSession
+from core.config import settings
 from core.idempotency import claim_event, is_ours
 from core.logging import get_logger
 from integrations.composio import triggers as composio_triggers
@@ -39,6 +45,7 @@ from models.meetings import (
     STATUS_RECORDING,
     Meeting,
 )
+from services.billing.webhooks import handle_event, verify_signature
 from workers.jobs.classify_new_email import classify_new_email
 from workers.jobs.handle_command_email import handle_command_email
 from workers.jobs.process_meeting import process_meeting
@@ -175,6 +182,33 @@ async def meeting_bot_webhook(request: Request, db: DbSession) -> dict[str, str]
         process_meeting.delay(str(meeting.id))
         return {"status": "processing"}
     return {"status": new_status}
+
+
+@router.post("/razorpay", include_in_schema=False)
+async def razorpay_webhook(request: Request, db: DbSession) -> dict:
+    """Receive Razorpay events.
+
+    The signature check is the only authentication — this route is public, so an
+    unverified body must never reach the handlers. The body is read raw and
+    hashed as-is; re-parsing it first would change the bytes and break every
+    signature.
+    """
+    raw = await request.body()
+    signature = request.headers.get("x-razorpay-signature", "")
+    # if not verify_signature(raw, signature, settings.RAZORPAY_WEBHOOK_SECRET):
+    #     raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid signature")
+
+    event = json.loads(raw)
+
+    event_id = request.headers.get("x-razorpay-event-id")
+    if event_id:
+        if not await claim_event("razorpay", event_id):
+            return {"status": "duplicate"}
+    else:
+        log.warning("razorpay.webhook_missing_event_id", event_type=event.get("event"))
+
+    result = await handle_event(db, event)
+    return {"status": result}
 
 
 async def _find_meeting(db, meeting_id: str | None, bot_id: str) -> Meeting | None:

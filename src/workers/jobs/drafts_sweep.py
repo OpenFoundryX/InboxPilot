@@ -11,13 +11,19 @@ rarely or nudging too often.
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from core.database import run_async, with_worker_session
+from core.locks import single_run
 from core.logging import get_logger
+from core.plans import get_plan
 from models.drafts import DraftSettings
+from services.billing.access import effective_plan_id
+from services.billing.entitlements import FEATURE_DRAFT, check
+from services.billing.store import get_subscription
+from services.billing.usage import get_or_create_counter
 from services.drafts import follow_up, sweep
 from services.drafts.context import DraftConfig, load_config
 from services.drafts.store import users_with_drafting_enabled
@@ -31,6 +37,30 @@ SWEEP_INTERVAL_MINUTES = 15
 # about the same silence.
 FOLLOW_UP_INTERVAL_HOURS = 24
 
+# Shared between `drafts_sweep` and `drafts_follow_up` rather than one key per
+# task. Both tasks compute a per-user `budget` from the same monthly counter
+# in `_due_users` and then spend from that snapshot — `sweep.sweep_user` and
+# `follow_up.sweep_user` respectively. A lock scoped to just one task would
+# stop that task overlapping itself but would do nothing about the two tasks
+# overlapping *each other*: each would read the same remaining quota and each
+# spend it in full, for up to `follow_up.MAX_PER_SWEEP` (5) drafts over quota
+# in the worst case (see the module's exactness discussion). A shared key
+# closes both. The cost is that whichever task's beat tick fires while the
+# other holds the lock skips that tick entirely — acceptable here because
+# both are catch-up jobs whose next run recovers the skip, whereas an
+# overshoot past the quota is not something a later run can undo.
+DRAFTS_LOCK = "drafts.quota"
+# `single_run`'s own default (300s) equals `drafts.sweep`'s beat interval
+# exactly (`beat_schedule.py`). A pass can make up to 10 LLM generations per
+# due user (`sweep.MAX_PER_SWEEP`), so a run that takes close to 300s is
+# realistic, not a corner case — and once it does, the lock expires mid-run,
+# the next tick acquires, and both passes spend the same stale `budget`
+# snapshot, which is exactly the overshoot this lock exists to prevent. 1800s
+# is comfortably above any plausible run length for either task sharing this
+# key. See `core.locks.single_run`'s docstring for the separate, unfixed
+# fencing-token gap this doesn't address.
+DRAFTS_LOCK_TTL = 1800
+
 
 def _is_due(last: datetime | None, delta: timedelta) -> bool:
     if last is None:
@@ -42,14 +72,44 @@ def _is_due(last: datetime | None, delta: timedelta) -> bool:
     return datetime.now(UTC) - last >= delta
 
 
-async def _due_users(db, field: str, delta: timedelta) -> list[tuple[str, DraftConfig]]:
-    """Load config for every enabled user who is due, in one session."""
+async def may_draft(db, user_id: uuid.UUID, now: datetime) -> bool:
+    """Whether this user's plan still allows a generated draft."""
+    return (await check(db, user_id, FEATURE_DRAFT, now=now)).allowed
+
+
+async def remaining_drafts(db, user_id: uuid.UUID, now: datetime) -> int | None:
+    """Drafts left in this user's monthly quota. None means unlimited."""
+    sub = await get_subscription(db, user_id)
+    allowance = get_plan(effective_plan_id(sub)).entitlements.drafts_per_month
+    if allowance is None:
+        return None
+    counter = await get_or_create_counter(db, user_id, now)
+    return max(0, allowance - counter.drafts_generated)
+
+
+async def _due_users(db, field: str, delta: timedelta) -> list[tuple[str, DraftConfig, int | None]]:
+    """Load config and remaining quota for every enabled user who is due.
+
+    A user who is locked or already at quota is filtered out here rather than
+    loaded and then skipped later, so the entitlement check happens once per
+    user per pass instead of being scattered across both callers.
+    """
     rows = await users_with_drafting_enabled(db)
-    out: list[tuple[str, DraftConfig]] = []
+    now = datetime.now(timezone.utc)
+    out: list[tuple[str, DraftConfig, int | None]] = []
     for row in rows:
         if not _is_due(getattr(row, field), delta):
             continue
-        out.append((str(row.user_id), await load_config(db, row.user_id)))
+        decision = await check(db, row.user_id, FEATURE_DRAFT, now=now)
+        if not decision.allowed:
+            log.info(
+                "drafts.skipped_no_entitlement",
+                user_id=str(row.user_id),
+                reason=decision.reason,
+            )
+            continue
+        budget = await remaining_drafts(db, row.user_id, now)
+        out.append((str(row.user_id), await load_config(db, row.user_id), budget))
     return out
 
 
@@ -62,47 +122,80 @@ async def _stamp(db, user_id: uuid.UUID, field: str) -> None:
 @celery_app.task(name="drafts.sweep")
 def drafts_sweep() -> dict:
     """Catch-up pass for every user who is due."""
-    delta = timedelta(minutes=SWEEP_INTERVAL_MINUTES)
-    # Annotated because `with_worker_session(fn: Any) -> T` gives mypy nothing to
-    # infer T from. Same reason at every call site below.
-    due: list[tuple[str, DraftConfig]] = run_async(
-        with_worker_session(lambda db: _due_users(db, "last_sweep_at", delta))
-    )
+    with single_run(DRAFTS_LOCK, ttl=DRAFTS_LOCK_TTL) as acquired:
+        if not acquired:
+            return {"skipped": "locked"}
 
-    created = 0
-    for user_id, config in due:
-        # Stamp before working, not after. A sweep that dies partway through
-        # would otherwise be retried by the next beat tick immediately, and its
-        # Gmail queries plus LLM calls would run again from the top.
-        run_async(with_worker_session(lambda db, u=user_id: _stamp(db, uuid.UUID(u), "last_sweep_at")))
-        try:
-            created += sweep.sweep_user(user_id, config)
-        except Exception:
-            log.exception("drafts.sweep_user_failed", user_id=user_id)
+        delta = timedelta(minutes=SWEEP_INTERVAL_MINUTES)
+        # Annotated because `with_worker_session(fn: Any) -> T` gives mypy nothing to
+        # infer T from. Same reason at every call site below.
+        due: list[tuple[str, DraftConfig, int | None]] = run_async(
+            with_worker_session(lambda db: _due_users(db, "last_sweep_at", delta))
+        )
 
-    return {"users": len(due), "drafts_created": created}
+        created = 0
+        for user_id, config, budget in due:
+            # Stamp before working, not after. A sweep that dies partway through
+            # would otherwise be retried by the next beat tick immediately, and its
+            # Gmail queries plus LLM calls would run again from the top.
+            run_async(
+                with_worker_session(lambda db, u=user_id: _stamp(db, uuid.UUID(u), "last_sweep_at"))
+            )
+            try:
+                # `budget` is this user's remaining monthly quota, computed by
+                # `_due_users` at the top of this run. Handing it to `sweep_user`
+                # is what keeps the quota exact rather than per-sweep: without it,
+                # a user sitting at 19 of 20 drafts would get a whole
+                # `MAX_PER_SWEEP` batch and finish over quota. The lock above is
+                # what makes that snapshot trustworthy for the length of this run.
+                #
+                # Metering happens inside `services.drafts.create` now, once per
+                # draft actually made, not here in bulk — that is the one funnel
+                # every draft-producing caller shares, so counting it a second
+                # time here would double it.
+                made = sweep.sweep_user(user_id, config, budget=budget)
+                created += made
+            except Exception:
+                log.exception("drafts.sweep_user_failed", user_id=user_id)
+
+        return {"users": len(due), "drafts_created": created}
 
 
 @celery_app.task(name="drafts.follow_up")
 def drafts_follow_up() -> dict:
     """Daily follow-up nudges for every user who is due."""
-    delta = timedelta(hours=FOLLOW_UP_INTERVAL_HOURS)
-    due: list[tuple[str, DraftConfig]] = run_async(
-        with_worker_session(lambda db: _due_users(db, "last_follow_up_at", delta))
-    )
+    with single_run(DRAFTS_LOCK, ttl=DRAFTS_LOCK_TTL) as acquired:
+        if not acquired:
+            return {"skipped": "locked"}
 
-    nudges = 0
-    for user_id, config in due:
-        if not config.follow_up_enabled:
-            continue
-        run_async(
-            with_worker_session(
-                lambda db, u=user_id: _stamp(db, uuid.UUID(u), "last_follow_up_at")
-            )
+        delta = timedelta(hours=FOLLOW_UP_INTERVAL_HOURS)
+        due: list[tuple[str, DraftConfig, int | None]] = run_async(
+            with_worker_session(lambda db: _due_users(db, "last_follow_up_at", delta))
         )
-        try:
-            nudges += follow_up.sweep_user(user_id, config)
-        except Exception:
-            log.exception("drafts.follow_up_user_failed", user_id=user_id)
 
-    return {"users": len(due), "follow_ups_created": nudges}
+        nudges = 0
+        for user_id, config, budget in due:
+            if not config.follow_up_enabled:
+                continue
+            run_async(
+                with_worker_session(
+                    lambda db, u=user_id: _stamp(db, uuid.UUID(u), "last_follow_up_at")
+                )
+            )
+            try:
+                # Follow-up nudges are drafts too and draw on the same monthly
+                # quota, so `budget` is capped here exactly as it is for the
+                # catch-up sweep — otherwise a user near their limit could take a
+                # full `follow_up.MAX_PER_SWEEP` batch of nudges and land over
+                # quota within this single pass. The shared lock (see
+                # `DRAFTS_LOCK`) is what stops this task and `drafts_sweep`
+                # from both spending the same stale budget snapshot at once.
+                #
+                # Metering happens inside `services.drafts.create`, once per
+                # draft actually made — not here in bulk, or it would double count.
+                made = follow_up.sweep_user(user_id, config, budget=budget)
+                nudges += made
+            except Exception:
+                log.exception("drafts.follow_up_user_failed", user_id=user_id)
+
+        return {"users": len(due), "follow_ups_created": nudges}

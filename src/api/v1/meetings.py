@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
 from core.logging import get_logger
@@ -32,6 +33,7 @@ from schemas.meetings import (
     SettingsUpdate,
 )
 from services.auth.dependencies import get_current_user
+from services.billing.entitlements import FEATURE_MEETING_BOT, REASON_LOCKED, check
 from services.meetings.links import find_meeting_link, link_from_event
 from services.meetings.recording import resolve_recording_url
 from services.meetings.store import get_or_create_settings, upsert_from_event
@@ -46,6 +48,31 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 LIST_LIMIT = 50
 # How far ahead to look for the event, matching meetings_sweep's horizon.
 EVENT_LOOKUP_HOURS = 48
+
+
+async def _require_bot_quota(db: AsyncSession, user: User, now: datetime) -> None:
+    """Reject a join/enable request the same way the worker would, but now.
+
+    Unlike the calendar sweep and `join_now` (fire-and-forget, nobody is
+    waiting on the result — silently withholding the bot and logging is the
+    right call there), these two routes are synchronous and user-initiated: a
+    user pasting a link or flipping a switch is asking a direct question and
+    deserves a direct answer rather than a 202 that quietly does nothing.
+    `require_entitled`/`EntitledUser` (`services.billing.dependencies`) only
+    answers "is this account live" — it would let a Starter user who is over
+    their bot-hour cap straight through. `entitlements.check` with
+    `FEATURE_MEETING_BOT` is the one that also enforces the cap, which is the
+    check that actually matters here, so it is used directly rather than the
+    dependency.
+    """
+    decision = await check(db, user.id, FEATURE_MEETING_BOT, now=now)
+    if not decision.allowed:
+        detail = (
+            "Your subscription is not active."
+            if decision.reason == REASON_LOCKED
+            else "You've used this month's meeting bot minutes on your plan."
+        )
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, detail)
 
 
 @router.get("/settings", response_model=SettingsRead)
@@ -89,6 +116,8 @@ async def join_meeting(payload: JoinRequest, user: CurrentUser, db: DbSession) -
     settings_row = await get_or_create_settings(db, user.id)
     if not settings_row.enabled:
         raise HTTPException(status.HTTP_409_CONFLICT, "The notetaker is disabled")
+
+    await _require_bot_quota(db, user, datetime.now(timezone.utc))
 
     meeting = Meeting(
         user_id=user.id,
@@ -135,6 +164,8 @@ async def enable_bot(payload: EnableBotRequest, user: CurrentUser, db: DbSession
         raise HTTPException(status.HTTP_409_CONFLICT, "The notetaker is disabled")
 
     now = datetime.now(timezone.utc)
+    await _require_bot_quota(db, user, now)
+
     events = await run_in_threadpool(
         calendar.list_events, str(user.id), now, now + timedelta(hours=EVENT_LOOKUP_HOURS)
     )

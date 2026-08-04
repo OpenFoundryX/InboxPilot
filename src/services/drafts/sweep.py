@@ -39,9 +39,35 @@ async def _labels_for_keys(db, user_id: uuid.UUID, keys: tuple[str, ...]) -> lis
     return [(c.key, c.gmail_label) for c in categories if c.key in keys and c.is_enabled]
 
 
-def sweep_user(user_id: str, config: DraftConfig, user_name: str | None = None) -> int:
+def effective_limit(budget: int | None, max_per_sweep: int = MAX_PER_SWEEP) -> int:
+    """How many drafts this pass may create.
+
+    `budget` is what the user's plan has left this month. Without it the sweep
+    would create a whole batch for someone with one draft of quota remaining.
+
+    `max_per_sweep` defaults to this module's own cap. `follow_up.sweep_user`
+    reuses this function rather than duplicating the min/max logic, but its
+    per-sweep ceiling (5) is not this module's (10), so it passes its own
+    constant explicitly instead of relying on the default.
+    """
+    if budget is None:
+        return max_per_sweep
+    return min(max_per_sweep, max(0, budget))
+
+
+def sweep_user(
+    user_id: str,
+    config: DraftConfig,
+    user_name: str | None = None,
+    *,
+    budget: int | None = None,
+) -> int:
     """Draft for one user's undrafted recent mail. Returns how many were created."""
     if not config.category_keys:
+        return 0
+
+    limit = effective_limit(budget)
+    if limit <= 0:
         return 0
 
     uid = uuid.UUID(user_id)
@@ -53,7 +79,7 @@ def sweep_user(user_id: str, config: DraftConfig, user_name: str | None = None) 
 
     created = 0
     for category_key, gmail_label in targets:
-        if created >= MAX_PER_SWEEP:
+        if created >= limit:
             break
         # `-label:DRAFTED_LABEL` is what makes this pass idempotent. Nothing about
         # drafts is stored, so without this exclusion every sweep would re-draft
@@ -69,7 +95,7 @@ def sweep_user(user_id: str, config: DraftConfig, user_name: str | None = None) 
             continue
 
         for email in emails:
-            if created >= MAX_PER_SWEEP:
+            if created >= limit:
                 break
             if not email.id:
                 continue

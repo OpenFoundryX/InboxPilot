@@ -7,6 +7,7 @@ slots and drafts a threaded reply proposing them. It only ever creates a draft
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from openai import OpenAI
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from core.logging import get_logger
 from integrations.composio import calendar, gmail
 from models.mailman import VipRule
 from services.activity.record import record_draft_created
+from services.billing.usage import add_drafts
 from services.mailman import gmail_ops
 from services.mailman.rules import extract_address
 
@@ -85,6 +87,21 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
         # Keyed by the source message, not the draft id: one email replied to
         # counts once, even if a re-run leaves a second draft object behind.
         record_draft_created(user_id, e.id)
+        # This path is entirely separate from `services.drafts.create` (it
+        # calls `gmail.create_draft` directly, so C1's centralized metering
+        # there never sees it) and reaches here only through
+        # `ROUTINE_SCHEDULE_TRUSTED`, which `routines_sweep.py` already gates
+        # on `FEATURE_ROUTINE` before calling in — Starter can't reach this
+        # function at all. Metered anyway, for the same reason every other
+        # draft-producing path now is: it's cheap, correct, and the dashboard's
+        # "drafts used" figure (`UsageOut.drafts_used`) should count every
+        # draft InboxOS writes, not just the ones from two of the three
+        # producers. Pro's allowance is unlimited today, so this can't cap
+        # anyone — it only fixes an under-reported number.
+        try:
+            await add_drafts(db, uuid.UUID(user_id), 1, datetime.now(timezone.utc))
+        except Exception:
+            log.warning("scheduling.meter_failed", user_id=user_id)
         drafted += 1
         log.info("scheduling.drafted", user_id=user_id, requester=requester)
     return drafted
