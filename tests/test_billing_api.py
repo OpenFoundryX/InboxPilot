@@ -10,6 +10,7 @@ from models.billing import (
     STATUS_ACTIVE,
     STATUS_AUTHENTICATED,
     STATUS_CANCELLED,
+    STATUS_CREATED,
     Subscription,
 )
 from services.auth.dependencies import get_current_user
@@ -76,6 +77,57 @@ async def test_subscription_endpoint_reports_locked_without_a_row(client):
     body = (await client.get("/v1/billing/subscription")).json()
     assert body["access"] == "locked"
     assert body["plan_id"] is None
+
+
+async def test_subscription_endpoint_reports_trial_available_without_a_row(client):
+    """No row yet means no trial has ever been granted — the plan picker must
+    be able to promise a free trial to a brand-new signup."""
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["trial_available"] is True
+
+
+async def test_subscription_endpoint_reports_trial_available_once_consumed(
+    db, user, client
+):
+    """Once a trial has run its course, checkout charges immediately (see
+    `start_checkout`'s `trial_consumed`-and-elapsed branch) — the plan picker
+    must stop promising a free trial to these users."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["trial_available"] is False
+
+
+async def test_subscription_endpoint_reports_trial_available_while_trial_runs(
+    db, user, client
+):
+    """A trial already granted and still running is not "unavailable" — a
+    checkout retry during it (e.g. subscribe, cancel before the first charge,
+    checkout again) continues the same free trial rather than charging."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=3),
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["trial_available"] is True
 
 
 async def test_subscription_endpoint_reports_usage(db, user, client):
@@ -351,11 +403,16 @@ async def test_cancel_during_trial_cancels_immediately(db, user, client, fake_ra
     assert response.json()["access"] == "locked"
 
 
-async def test_checkout_after_cancel_clears_cancelled_status(
+async def test_checkout_after_cancel_clears_cancel_at_period_end(
     db, user, client, fake_razorpay
 ):
-    """Re-subscribe must not leave `status = cancelled` on the row — that is
-    what made Settings keep saying inactive after a successful reactivation."""
+    """Re-subscribe must not carry a stale `cancel_at_period_end` flag onto the
+    new subscription — that is what made Settings keep saying "cancels at
+    period end" on an actively billing account after a successful
+    reactivation. `status` is deliberately not asserted here: the row stays
+    locked (whatever status it already had) until the webhook for the new
+    Razorpay subscription confirms the mandate — see
+    `test_checkout_leaves_status_untouched_for_the_webhook_to_confirm`."""
     from sqlalchemy import select
 
     db.add(
@@ -379,5 +436,109 @@ async def test_checkout_after_cancel_clears_cancelled_status(
 
     sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
     assert sub.razorpay_subscription_id == "sub_test123"
-    assert sub.status == "created"
     assert sub.cancel_at_period_end is False
+
+
+async def test_checkout_does_not_lock_a_first_time_subscriber(
+    db, user, client, fake_razorpay
+):
+    """`get_or_create_subscription` grants the trial — and with it, entitled
+    access — the moment a first-time subscriber's row is created, before any
+    Razorpay call runs. Checkout must not then stomp that back down to
+    Razorpay's `create_subscription` response, which is always
+    `status: "created"` (mandate not yet signed) regardless of whether this
+    call ever reaches the modal. Overwriting `sub.status` with it locked out
+    every brand-new subscriber the instant they picked a plan — this is the
+    blocker the fix removes."""
+    from sqlalchemy import select
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    # Set by `get_or_create_subscription` on row creation and left alone —
+    # proof checkout did not overwrite it with Razorpay's "created" response.
+    assert sub.status == "authenticated"
+    assert sub.razorpay_subscription_id == "sub_test123"
+    sub_body = (await client.get("/v1/billing/subscription")).json()
+    assert sub_body["access"] == "entitled"
+
+
+async def test_checkout_leaves_an_existing_non_entitled_status_for_the_webhook(
+    db, user, client, fake_razorpay
+):
+    """Re-checkout over a row that already exists (e.g. `cancelled`, from a
+    prior subscription) must not mirror Razorpay's `created` response onto
+    `status` either. Unlike the first-checkout case, there is no freshly
+    granted trial to protect here — the row simply stays locked, exactly as
+    it already was, until the new subscription's authenticated webhook
+    arrives and confirms the mandate."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_old_cancelled",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    # Untouched by checkout — still whatever it was before, not Razorpay's
+    # transient "created" response, and not silently flipped to "cancelled"
+    # meaning something new either.
+    assert sub.status == STATUS_CANCELLED
+    assert sub.razorpay_subscription_id == "sub_test123"
+    sub_body = (await client.get("/v1/billing/subscription")).json()
+    assert sub_body["access"] == "locked"
+
+
+async def test_abandoned_checkout_can_be_retried_instead_of_409ing(
+    db, user, client, fake_razorpay
+):
+    """A user who opens the Razorpay modal and closes it without authorising
+    is left with a subscription row pinned at `created` — no card, no signed
+    mandate, nothing running at Razorpay to orphan. Before `created` was
+    added to `_TERMINAL_SUBSCRIPTION_STATUSES`, retrying checkout from that
+    state hit the "already have a subscription" 409 forever, since no webhook
+    was ever coming to move it off `created`. It must now be retryable, the
+    same as `cancelled`/`expired`/`completed`."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CREATED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_abandoned",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=6),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+    assert fake_razorpay["subscription"]["customer_id"] == "cust_existing"
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    # The retry's subscription id replaced the abandoned one — there is
+    # nothing live at Razorpay under the old id to orphan.
+    assert sub.razorpay_subscription_id == "sub_test123"

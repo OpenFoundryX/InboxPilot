@@ -39,6 +39,14 @@ class SubscriptionOut(BaseModel):
     cancel_at_period_end: bool
     comped: bool
     has_payment_method: bool
+    # Whether checking out *right now* would grant a free trial rather than
+    # charge immediately — i.e. whether `start_checkout`'s trial branch (no
+    # row yet, or a trial already running) applies instead of its
+    # trial-consumed-and-elapsed branch. Named for what the user gets, not
+    # for the `trial_consumed` column it's derived from: the plan picker
+    # needs an answer to "will I be charged today", and `trial_consumed`
+    # alone doesn't answer that (a still-running trial has it set to `True`).
+    trial_available: bool
     usage: UsageOut
 
 

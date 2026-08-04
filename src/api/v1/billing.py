@@ -57,15 +57,54 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 MONTHLY_CYCLES = 120
 ANNUAL_CYCLES = 10
 
-# Statuses in which Razorpay's own record of the subscription is already
-# finished. Starting a fresh checkout from one of these cannot orphan a live
-# mandate — there is nothing left running to abandon. Every other status
-# (including `created`, `halted`, `paused`) is treated as potentially still
-# live: `/checkout` refuses to run again once `razorpay_subscription_id` is
-# set and the row isn't in one of these, rather than risk creating a second
+# Statuses from which starting a fresh checkout cannot orphan a live mandate
+# — there is nothing left running at Razorpay to abandon. Every other status
+# (including `halted`, `paused`) is treated as potentially still live:
+# `/checkout` refuses to run again once `razorpay_subscription_id` is set and
+# the row isn't in one of these, rather than risk creating a second
 # subscription that keeps billing with nothing pointing at it. See
 # `test_checkout_rejects_when_a_live_subscription_already_exists`.
-_TERMINAL_SUBSCRIPTION_STATUSES = frozenset({STATUS_CANCELLED, STATUS_EXPIRED, STATUS_COMPLETED})
+#
+# `created` belongs here too: it means the customer opened the Razorpay modal
+# and closed it without authorising, so no card and no mandate exist — the
+# same "nothing to orphan" reasoning as `cancelled`/`expired`/`completed`.
+# Leaving it out made an abandoned modal an unrecoverable 409 loop, since
+# nothing (no webhook, no other write) ever moves a row off `created` except
+# a fresh checkout. See `test_abandoned_checkout_can_be_retried_instead_of_409ing`.
+#
+# This does reopen a narrow race the other terminal statuses don't have:
+# unlike `cancelled`/`expired`/`completed` — which Razorpay itself considers
+# finished — a row can read `created` in *our* mirror while the *real*
+# subscription has already moved past it (the user just authorised, and the
+# webhook confirming that hasn't landed yet). A checkout retry inside that
+# window would create a second Razorpay subscription and overwrite
+# `razorpay_subscription_id`, orphaning the one that's actually live. That
+# window is bounded by webhook delivery latency (normally sub-second to a
+# few seconds) rather than open-ended, and nothing in the normal flow retries
+# checkout immediately after a *successful* modal completion — only after a
+# dismiss/failure. Accepted for v1 as a materially smaller risk than locking
+# out every abandoned-modal user permanently; a tighter fix would have
+# `/checkout` confirm current status against Razorpay itself before trusting
+# `created` in our own row, which is future work, not this fix.
+_TERMINAL_SUBSCRIPTION_STATUSES = frozenset(
+    {STATUS_CREATED, STATUS_CANCELLED, STATUS_EXPIRED, STATUS_COMPLETED}
+)
+
+
+def _trial_available(sub: Subscription | None, now: datetime) -> bool:
+    """Whether checking out right now would grant a free trial.
+
+    Mirrors `start_checkout`'s three-way trial branch (no row yet / a trial
+    already running / consumed-and-elapsed) without duplicating its
+    `trial_ends_at` computation — this only needs the yes/no, not the exact
+    window. Kept in sync with that branch by
+    `test_subscription_endpoint_reports_trial_available_*`.
+    """
+    if sub is None:
+        return True
+    if not sub.trial_consumed:
+        return True
+    return sub.trial_ends_at is not None and sub.trial_ends_at > now
 
 
 async def _subscription_out(
@@ -91,6 +130,7 @@ async def _subscription_out(
         cancel_at_period_end=sub.cancel_at_period_end if sub else False,
         comped=sub.comped if sub else False,
         has_payment_method=bool(sub and sub.razorpay_customer_id),
+        trial_available=_trial_available(sub, now),
         usage=UsageOut(
             bot_hours_used=round(counter.bot_seconds_used / 3600, 2),
             bot_hours_included=entitlements.bot_hours_per_month,
@@ -218,12 +258,19 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     sub.currency = CURRENCY
     sub.trial_ends_at = trial_ends_at
     sub.trial_consumed = True
-    # Mirror Razorpay's status onto the row now. Without this, a re-subscribe
-    # after cancel leaves `status = cancelled` until the webhook lands — and
-    # if the webhook is delayed/failing, Settings keeps saying "inactive"
-    # even though checkout just succeeded. `created` (mandate not yet signed)
-    # stays locked by design; the authenticated webhook then unlocks.
-    sub.status = created.get("status") or STATUS_CREATED
+    # `status` is deliberately left untouched here. Razorpay's create response
+    # always answers `status: "created"` — that's true the instant *any*
+    # checkout succeeds, mandate signed or not — so mirroring it here locked
+    # every new subscriber out (`created` is not in `ENTITLED_STATUSES`)
+    # before they'd even seen the payment modal, with no way back in if they
+    # closed it: `created` wasn't terminal, so a retry 409'd, and no webhook
+    # for an abandoned mandate was ever coming to rescue them. Leaving
+    # `status` alone means a fresh row keeps the store's `created` default and
+    # a re-subscribe keeps whatever it already had (e.g. `cancelled`) — either
+    # way locked, exactly as before checkout ran — until the authenticated
+    # webhook confirms the mandate and unlocks it. See
+    # `test_checkout_does_not_lock_a_first_time_subscriber` and
+    # `test_checkout_leaves_an_existing_non_entitled_status_for_the_webhook`.
     # A prior cancellation must not survive into a new subscription — without
     # this, a customer who cancels and later re-subscribes carries a
     # permanent "cancels at period end" label on an actively billing account
