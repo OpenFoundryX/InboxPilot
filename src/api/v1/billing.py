@@ -29,6 +29,7 @@ from models.billing import (
     STATUS_CREATED,
     STATUS_EXPIRED,
     STATUS_PENDING,
+    SUBSCRIPTION_STARTED_STATUSES,
     Subscription,
 )
 from models.users import User
@@ -107,6 +108,22 @@ def _trial_available(sub: Subscription | None, now: datetime) -> bool:
     return sub.trial_ends_at is not None and sub.trial_ends_at > now
 
 
+def _subscription_started(sub: Subscription | None) -> bool:
+    """Whether this user has ever actually authorised a subscription.
+
+    `comped` overrides here exactly as it does in `resolve_access`/
+    `effective_plan_id`: a design partner comped straight onto a plan (see
+    `Subscription.comped`'s "needs no Razorpay record and never locks") never
+    touches checkout at all, so gating strictly on status would strand that
+    row at the store's `created` default forever. Otherwise this is a direct
+    read of `SUBSCRIPTION_STARTED_STATUSES` — no row and no status in that set
+    (i.e. `created`/`expired`) both mean no mandate was ever signed.
+    """
+    if sub is None:
+        return False
+    return sub.comped or sub.status in SUBSCRIPTION_STARTED_STATUSES
+
+
 async def _subscription_out(
     sub: Subscription | None, user_id: uuid.UUID, db: AsyncSession
 ) -> SubscriptionOut:
@@ -130,6 +147,7 @@ async def _subscription_out(
         cancel_at_period_end=sub.cancel_at_period_end if sub else False,
         comped=sub.comped if sub else False,
         has_payment_method=bool(sub and sub.razorpay_customer_id),
+        subscription_started=_subscription_started(sub),
         trial_available=_trial_available(sub, now),
         usage=UsageOut(
             bot_hours_used=round(counter.bot_seconds_used / 3600, 2),

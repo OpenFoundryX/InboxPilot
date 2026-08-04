@@ -46,6 +46,26 @@ STATUS_COMPLETED = "completed"
 # customer abandoned the modal without authorising, so no card exists.
 ENTITLED_STATUSES = frozenset({STATUS_AUTHENTICATED, STATUS_ACTIVE, STATUS_PENDING})
 
+# Statuses reachable only once the user has actually authorised a Razorpay
+# mandate — i.e. they got past the checkout modal rather than just opening it.
+# This is a *superset* of `ENTITLED_STATUSES` on purpose: authorisation can
+# outlive entitlement (a subscription that later lapses to `halted`/`paused`,
+# or is deliberately `cancelled`), and someone who authorised once but has
+# since churned still proves they aren't trying to sneak past checkout — they
+# just aren't currently paying. Keeping the two sets side by side means a
+# status added to one is a visible, deliberate decision about the other
+# rather than something that quietly falls through the cracks.
+#
+# Of Razorpay's nine statuses, exactly two are reachable *without* ever
+# authorising: `created` (the subscription object exists server-side, but the
+# modal was closed before the mandate was signed — the plan-picker bypass
+# this set exists to close) and `expired` (the mandate was never authenticated
+# before `start_at` passed). A user who has neither of those nor any row at
+# all has, definitionally, never started a subscription.
+SUBSCRIPTION_STARTED_STATUSES = ENTITLED_STATUSES | frozenset(
+    {STATUS_HALTED, STATUS_PAUSED, STATUS_CANCELLED, STATUS_COMPLETED}
+)
+
 
 class Subscription(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "subscriptions"

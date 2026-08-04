@@ -39,6 +39,19 @@ class SubscriptionOut(BaseModel):
     cancel_at_period_end: bool
     comped: bool
     has_payment_method: bool
+    # Whether this user has ever actually authorised a subscription — signed
+    # a Razorpay mandate, not merely had `plan_id` set. `plan_id` is written
+    # by `start_checkout` the instant the Razorpay subscription object is
+    # created server-side, before the checkout modal even opens, so it is
+    # true for someone who closed the modal without authorising anything.
+    # This field is the one the dashboard's paywall gate must use instead:
+    # derived from `models.billing.SUBSCRIPTION_STARTED_STATUSES`, it's
+    # `False` only for `created`/`expired`/no row at all — the only ways to
+    # reach this response without a signed mandate. Deliberately not the same
+    # question as `access == "entitled"`: a cancelled or lapsed subscription
+    # authorised once and is locked now, but must still read `True` here so
+    # the dashboard stays reachable read-only for it.
+    subscription_started: bool
     # Whether checking out *right now* would grant a free trial rather than
     # charge immediately — i.e. whether `start_checkout`'s trial branch (no
     # row yet, or a trial already running) applies instead of its

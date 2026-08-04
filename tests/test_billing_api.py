@@ -11,6 +11,7 @@ from models.billing import (
     STATUS_AUTHENTICATED,
     STATUS_CANCELLED,
     STATUS_CREATED,
+    STATUS_EXPIRED,
     Subscription,
 )
 from services.auth.dependencies import get_current_user
@@ -77,6 +78,115 @@ async def test_subscription_endpoint_reports_locked_without_a_row(client):
     body = (await client.get("/v1/billing/subscription")).json()
     assert body["access"] == "locked"
     assert body["plan_id"] is None
+
+
+async def test_subscription_started_is_false_without_a_row(client):
+    """No subscription row at all: the dashboard paywall gate must bounce
+    this user rather than let a never-checked-out account through."""
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["subscription_started"] is False
+
+
+async def test_subscription_started_is_false_for_created(db, user, client):
+    """`created` is exactly the paywall bypass this field exists to close:
+    the browser opened the Razorpay modal (so `plan_id` got set by
+    `start_checkout`) and the user closed it without signing a mandate. No
+    card, no authorisation — the dashboard gate must not treat this as
+    started."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CREATED,
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["subscription_started"] is False
+
+
+async def test_subscription_started_is_false_for_expired(db, user, client):
+    """`expired` means the subscription's `start_at` passed without the user
+    ever authenticating a mandate — authorisation never happened here
+    either."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_EXPIRED,
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["subscription_started"] is False
+
+
+async def test_subscription_started_is_true_for_authenticated(db, user, client):
+    """`authenticated` is the trial: the mandate is signed. This is the
+    minimum bar for having actually started a subscription."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=3),
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["subscription_started"] is True
+
+
+async def test_subscription_started_is_true_for_cancelled(db, user, client):
+    """The one that proves this isn't just an alias for `access == entitled`:
+    a cancelled subscription is locked (see `resolve_access`) but the user
+    unquestionably authorised a mandate at some point, so the dashboard's
+    paywall gate must still let them through read-only — that's what lets
+    `SubscribeBanner`/`TrialPill` render on the dashboard for a churned
+    customer instead of making those components unreachable."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["access"] == "locked"
+    assert body["subscription_started"] is True
+
+
+async def test_subscription_started_is_true_for_a_comped_row_never_checked_out(
+    db, user, client
+):
+    """A design partner comped straight onto Pro (see `Subscription.comped`'s
+    "needs no Razorpay record and never locks") never authorised a mandate —
+    the row can sit at the store's `created` default forever. `comped`
+    already overrides every other status for `resolve_access`/
+    `effective_plan_id`; the paywall gate must honour the same override
+    rather than bouncing this account to `/onboarding/plan`."""
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CREATED,
+            comped=True,
+        )
+    )
+    await db.flush()
+
+    body = (await client.get("/v1/billing/subscription")).json()
+    assert body["subscription_started"] is True
 
 
 async def test_subscription_endpoint_reports_trial_available_without_a_row(client):
