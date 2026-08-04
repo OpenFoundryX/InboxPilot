@@ -55,6 +55,26 @@ _NOW_ACTION_ROUTINES = {
     "summarize_invoices_now": ROUTINE_INVOICES,
     "scan_deadlines_now": ROUTINE_DEADLINE_SCAN,
 }
+# Every action type `execute` below dispatches on. Declared here rather than
+# derived, so `services.commands.registry` can be checked against it without
+# importing the handler's dependencies — and so a new type added to `execute`
+# without a slash command to reach it fails a test instead of going unnoticed.
+ACTION_TYPES = frozenset(
+    {
+        "create_label",
+        "delete_label",
+        "set_routine",
+        "add_vip",
+        "remove_vip",
+        "create_rule",
+        "manage_routine",
+        "send_briefing_now",
+        "catch_up_now",
+        "summarize_invoices_now",
+        "scan_deadlines_now",
+        "set_reminder",
+    }
+)
 _ROUTINE_FIELDS = {
     "delivery_mode",
     "interval_minutes",
