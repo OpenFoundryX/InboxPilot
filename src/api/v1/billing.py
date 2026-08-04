@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.database import get_db
+from core.logging import get_logger
 from core.plans import (
     CURRENCY,
     INTERVAL_ANNUAL,
@@ -25,9 +26,6 @@ from core.plans import (
 from models.billing import (
     STATUS_ACTIVE,
     STATUS_CANCELLED,
-    STATUS_COMPLETED,
-    STATUS_CREATED,
-    STATUS_EXPIRED,
     STATUS_PENDING,
     SUBSCRIPTION_STARTED_STATUSES,
     Subscription,
@@ -43,9 +41,11 @@ from schemas.billing import (
 )
 from services.auth.dependencies import get_current_user
 from services.billing import razorpay_client
-from services.billing.access import effective_plan_id, resolve_access
+from services.billing.access import ACCESS_ENTITLED, effective_plan_id, resolve_access
 from services.billing.store import get_or_create_subscription, get_subscription
 from services.billing.usage import get_or_create_counter
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -58,38 +58,40 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 MONTHLY_CYCLES = 120
 ANNUAL_CYCLES = 10
 
-# Statuses from which starting a fresh checkout cannot orphan a live mandate
-# — there is nothing left running at Razorpay to abandon. Every other status
-# (including `halted`, `paused`) is treated as potentially still live:
-# `/checkout` refuses to run again once `razorpay_subscription_id` is set and
-# the row isn't in one of these, rather than risk creating a second
-# subscription that keeps billing with nothing pointing at it. See
-# `test_checkout_rejects_when_a_live_subscription_already_exists`.
+# `start_checkout`'s guard used to refuse a second checkout by checking
+# `sub.status` against a hand-maintained "terminal" list instead of asking
+# `resolve_access` — the one function that already knows, authoritatively,
+# whether a subscription is serving the user. The two disagreed on
+# `authenticated` past its `trial_ends_at` (locked by `resolve_access`,
+# absent from that list) and on `halted` (retries exhausted — same
+# disagreement): a user in either state was refused both product access
+# *and* a new subscription, with no path out. See
+# `test_checkout_permitted_over_an_authenticated_row_past_its_trial` and
+# `test_checkout_permitted_over_a_halted_subscription`. Keying the guard off
+# `resolve_access` directly removes the second copy of this rule instead of
+# hand-patching the list for every status it turns out to have missed.
 #
-# `created` belongs here too: it means the customer opened the Razorpay modal
-# and closed it without authorising, so no card and no mandate exist — the
-# same "nothing to orphan" reasoning as `cancelled`/`expired`/`completed`.
-# Leaving it out made an abandoned modal an unrecoverable 409 loop, since
-# nothing (no webhook, no other write) ever moves a row off `created` except
-# a fresh checkout. See `test_abandoned_checkout_can_be_retried_instead_of_409ing`.
+# `created` was added to the old list specifically so an abandoned Razorpay
+# modal (no card, no mandate) could be retried — `resolve_access` already
+# treats `created` as locked (it isn't in `ENTITLED_STATUSES`), so that case
+# falls out of this for free too. See
+# `test_abandoned_checkout_can_be_retried_instead_of_409ing`.
 #
-# This does reopen a narrow race the other terminal statuses don't have:
-# unlike `cancelled`/`expired`/`completed` — which Razorpay itself considers
-# finished — a row can read `created` in *our* mirror while the *real*
-# subscription has already moved past it (the user just authorised, and the
-# webhook confirming that hasn't landed yet). A checkout retry inside that
-# window would create a second Razorpay subscription and overwrite
-# `razorpay_subscription_id`, orphaning the one that's actually live. That
-# window is bounded by webhook delivery latency (normally sub-second to a
-# few seconds) rather than open-ended, and nothing in the normal flow retries
-# checkout immediately after a *successful* modal completion — only after a
-# dismiss/failure. Accepted for v1 as a materially smaller risk than locking
-# out every abandoned-modal user permanently; a tighter fix would have
-# `/checkout` confirm current status against Razorpay itself before trusting
-# `created` in our own row, which is future work, not this fix.
-_TERMINAL_SUBSCRIPTION_STATUSES = frozenset(
-    {STATUS_CREATED, STATUS_CANCELLED, STATUS_EXPIRED, STATUS_COMPLETED}
-)
+# This inherits the same narrow race the old list had for `created`: a row
+# can read locked in *our* mirror while the *real* Razorpay subscription has
+# just been authorised and the confirming webhook hasn't landed yet. A
+# checkout retry inside that window now cancels the (actually-live)
+# subscription before creating a replacement — worse than the old silent
+# orphan in one respect (the live mandate is deliberately killed rather than
+# merely abandoned) but no worse for the user, who ends up on a fresh,
+# correctly-tracked subscription either way. That window is bounded by
+# webhook delivery latency (normally sub-second to a few seconds), not
+# open-ended, and nothing in the normal flow retries checkout immediately
+# after a *successful* modal completion — only after a dismiss/failure or,
+# now, from a genuinely stuck account. Accepted for v1 for the same reason
+# the original race was: a tighter fix would have `/checkout` confirm
+# current status against Razorpay itself before trusting our own row, which
+# is future work, not this fix.
 
 
 def _trial_available(sub: Subscription | None, now: datetime) -> bool:
@@ -202,21 +204,59 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     # the call agrees; the only thing worth capturing early is the None-ness.
     existing_before = await get_subscription(db, user.id)
     sub = await get_or_create_subscription(db, user.id, trial_days=settings.TRIAL_DAYS)
+    now = datetime.now(timezone.utc)
 
-    # Refuse to run checkout again over a subscription that already has a
-    # Razorpay record which isn't finished. Without this, a double-click, a
-    # back-button resubmit, or a retry after a slow response calls
-    # `create_subscription` a second time and overwrites
-    # `razorpay_subscription_id` — silently orphaning the first subscription,
-    # which keeps billing with no row in our database pointing at it anymore.
+    # Refuse to run checkout again only when the existing subscription is
+    # actually serving the user right now. `resolve_access` is the single
+    # source of truth for that question everywhere else in the app
+    # (dashboard paywall, Celery sweeps) — asking it here instead of a
+    # second, hand-maintained notion of "still alive" is what closes the bug
+    # this guard used to have: an account `resolve_access` already treats as
+    # locked (trial-expired `authenticated`, `halted`) could still 409 out of
+    # ever subscribing again. `razorpay_subscription_id` must also be set:
+    # without one there is nothing to conflict with — a brand-new row
+    # (`authenticated`, trial running, no Razorpay id yet) or a backfilled
+    # account entitled purely by migration must not be blocked from ever
+    # running checkout in the first place.
+    #
     # Rejecting outright (rather than quietly returning the existing
-    # subscription) also keeps this from becoming an undocumented plan-change
-    # path, which the brief explicitly puts out of v1 scope.
-    if sub.razorpay_subscription_id and sub.status not in _TERMINAL_SUBSCRIPTION_STATUSES:
+    # subscription) keeps this from becoming an undocumented plan-change
+    # path for someone still entitled, which the brief explicitly puts out
+    # of v1 scope. That's still a double-click, a back-button resubmit, or a
+    # retry after a slow response calling `create_subscription` a second
+    # time and orphaning the first — the risk the guard has always existed
+    # to prevent.
+    if sub.razorpay_subscription_id and resolve_access(sub, now) == ACCESS_ENTITLED:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "You already have a subscription. Cancel it before starting a new one.",
         )
+
+    # Past the guard, the row is either brand new or *locked* — nothing at
+    # Razorpay under `razorpay_subscription_id`, if it's set, is serving the
+    # user (that's exactly what let the checkout above run). Leaving it
+    # alive while a second subscription gets created is the same
+    # orphaned-mandate risk the guard above exists to prevent, just
+    # self-inflicted this time — so cancel it first. Immediately, not at
+    # cycle end: it isn't serving them, so there's no prepaid period to
+    # honour. Best-effort: a `halted` subscription, or one Razorpay already
+    # considers finished, can legitimately error on cancel, and a Razorpay-
+    # side error here must never be what strands the user right back where
+    # this bug started. Ordering matters — this runs before the new
+    # subscription is created, and a caught failure changes nothing about
+    # what happens next, so the user is never worse off than if this step
+    # didn't exist.
+    if sub.razorpay_subscription_id:
+        try:
+            razorpay_client.cancel_subscription(
+                subscription_id=sub.razorpay_subscription_id, at_cycle_end=False
+            )
+        except Exception:
+            log.warning(
+                "billing.stale_subscription_cancel_failed",
+                user_id=str(user.id),
+                subscription_id=sub.razorpay_subscription_id,
+            )
 
     # Commit the trial row (and the guard's read of it) before making any
     # Razorpay calls. `get_or_create_subscription` only flushes, and
@@ -233,7 +273,6 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
     # duration of two external HTTP calls.
     await db.commit()
 
-    now = datetime.now(timezone.utc)
     if not sub.razorpay_customer_id:
         sub.razorpay_customer_id = razorpay_client.create_customer(
             email=user.email, name=user.full_name

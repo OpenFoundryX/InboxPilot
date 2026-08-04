@@ -12,6 +12,8 @@ from models.billing import (
     STATUS_CANCELLED,
     STATUS_CREATED,
     STATUS_EXPIRED,
+    STATUS_HALTED,
+    STATUS_PENDING,
     Subscription,
 )
 from services.auth.dependencies import get_current_user
@@ -651,4 +653,177 @@ async def test_abandoned_checkout_can_be_retried_instead_of_409ing(
     sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
     # The retry's subscription id replaced the abandoned one — there is
     # nothing live at Razorpay under the old id to orphan.
+    assert sub.razorpay_subscription_id == "sub_test123"
+
+
+# --- Checkout must key off `resolve_access`, not a hand-maintained status
+# list, so a locked subscription never becomes a permanent dead end. See
+# `access.py::resolve_access` and `start_checkout`'s guard. ---
+
+
+async def test_checkout_permitted_over_an_authenticated_row_past_its_trial(
+    db, user, client, fake_razorpay
+):
+    """This is the reported bug: a backfilled or webhook-less account sits in
+    `authenticated` forever once its trial elapses. `resolve_access` already
+    treats that as locked, but the old guard only consulted a status list
+    that didn't include `authenticated` — so this row could never check out
+    again despite serving the user nothing. The stale Razorpay subscription
+    must be cancelled (immediately, not at cycle end — it isn't serving
+    them) before the new one is created."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_stale_authenticated",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    assert fake_razorpay["cancel"]["subscription_id"] == "sub_stale_authenticated"
+    assert fake_razorpay["cancel"]["at_cycle_end"] is False
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_test123"
+
+
+async def test_checkout_permitted_over_a_halted_subscription(db, user, client, fake_razorpay):
+    """`halted` (retries exhausted) is the other status `resolve_access` locks
+    that isn't Razorpay-terminal — same dead end as `authenticated` past its
+    trial, same fix."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_HALTED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_halted",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    assert fake_razorpay["cancel"]["subscription_id"] == "sub_halted"
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_test123"
+
+
+async def test_checkout_still_rejects_a_pending_subscription(db, user, client, fake_razorpay):
+    """`pending` is Razorpay still retrying the card — genuinely entitled (see
+    `ENTITLED_STATUSES`), so this must still 409 rather than orphan a
+    mandate that may yet recover."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_PENDING,
+            razorpay_subscription_id="sub_pending",
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 409
+    assert "cancel" not in fake_razorpay
+    assert "subscription" not in fake_razorpay
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_pending"
+
+
+async def test_checkout_still_rejects_authenticated_with_a_trial_still_running(
+    db, user, client, fake_razorpay
+):
+    """The double-click / back-button-resubmit protection the guard exists
+    for: a signed mandate, trial still running, is genuinely entitled and
+    must still 409 rather than silently cancel a live mandate."""
+    from sqlalchemy import select
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_AUTHENTICATED,
+            razorpay_subscription_id="sub_live_trial",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=3),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 409
+    assert "cancel" not in fake_razorpay
+    assert "subscription" not in fake_razorpay
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    assert sub.razorpay_subscription_id == "sub_live_trial"
+
+
+async def test_checkout_succeeds_even_when_cancelling_the_stale_subscription_fails(
+    db, user, client, fake_razorpay, monkeypatch
+):
+    """Cancelling the old subscription is best-effort: a `halted` or
+    already-dead subscription can legitimately error on cancel at Razorpay,
+    and that must never block the user from subscribing again — that would
+    recreate the exact dead end this fix closes."""
+    from sqlalchemy import select
+
+    from services.billing import razorpay_client
+
+    def _boom(*, subscription_id, at_cycle_end=True):
+        raise RuntimeError("razorpay: subscription already halted, cannot cancel")
+
+    monkeypatch.setattr(razorpay_client, "cancel_subscription", _boom)
+
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_HALTED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_dead",
+            trial_consumed=True,
+            trial_ends_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+    )
+    await db.flush()
+
+    response = await client.post(
+        "/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"}
+    )
+    assert response.status_code == 200
+
+    sub = await db.scalar(select(Subscription).where(Subscription.user_id == user.id))
     assert sub.razorpay_subscription_id == "sub_test123"
