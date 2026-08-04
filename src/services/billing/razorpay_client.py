@@ -42,26 +42,35 @@ def create_subscription(
     *,
     plan_id: str,
     customer_id: str,
-    start_at: int,
+    start_at: int | None,
     total_count: int,
     notes: dict,
 ) -> dict:
-    """Create a subscription that first charges at `start_at`.
+    """Create a subscription, optionally deferring its first charge to `start_at`.
 
     `start_at` in the future is how a trial is expressed: Razorpay collects the
-    mandate now and takes the first payment then. `total_count` is required by
-    the API — it is the number of billing cycles, not a duration.
+    mandate now and takes the first payment then. `start_at` is optional to
+    Razorpay's API — when omitted, billing starts immediately once the
+    customer authorises the mandate, which is exactly the semantics wanted
+    when there is no meaningful future instant to give it (see
+    `start_checkout`'s lead-time check, which decides when that's the case).
+    `None` is therefore left out of the payload entirely rather than passed
+    through: the SDK sends whatever dict it's given verbatim, and a literal
+    `null` is not the same thing to Razorpay as the key being absent.
+
+    `total_count` is required by the API — it is the number of billing
+    cycles, not a duration.
     """
-    return _client().subscription.create(
-        {
-            "plan_id": plan_id,
-            "customer_id": customer_id,
-            "total_count": total_count,
-            "start_at": start_at,
-            "customer_notify": 1,
-            "notes": notes,
-        }
-    )
+    payload = {
+        "plan_id": plan_id,
+        "customer_id": customer_id,
+        "total_count": total_count,
+        "customer_notify": 1,
+        "notes": notes,
+    }
+    if start_at is not None:
+        payload["start_at"] = start_at
+    return _client().subscription.create(payload)
 
 
 def cancel_subscription(*, subscription_id: str, at_cycle_end: bool = True) -> dict:

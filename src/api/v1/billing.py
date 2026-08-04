@@ -7,7 +7,7 @@ and leaves card updates and plan changes to support.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -57,6 +57,28 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 # subscription from silently completing while the customer is still paying.
 MONTHLY_CYCLES = 120
 ANNUAL_CYCLES = 10
+
+# `trial_ends_at` below is computed against `now`, captured near the top of
+# this handler — but the `create_subscription` call that consumes it as
+# `start_at` doesn't run until after a `db.commit()` and, for a new
+# customer, a `create_customer` HTTP round trip to Razorpay. Both take real
+# wall-clock time. Razorpay requires `start_at` to be strictly in the future
+# *when it receives the request*, not when we computed it, and rejects it
+# otherwise with "start_at cannot be lesser than the current time" — this is
+# the exact production bug: a `trial_ends_at` of `now` (trial consumed) is
+# guaranteed stale by request time, and a `trial_ends_at` only a few seconds
+# out can easily lose the race too.
+#
+# Below this lead time, omit `start_at` entirely rather than send something
+# that might already be in the past (see `razorpay_client.create_subscription`)
+# — Razorpay then starts billing immediately on mandate authorisation, which
+# is the correct behaviour for "no meaningful trial left" and can't go stale
+# in transit. 60 seconds is comfortably above the one `db.commit()` plus at
+# most one HTTP call this handler makes between capturing `now` and calling
+# Razorpay — normally well under a second — while still being short enough
+# that no genuine trial (minimum grant is `settings.TRIAL_DAYS`, i.e. days)
+# is ever pushed onto the immediate path by mistake.
+START_AT_LEAD_TIME = timedelta(seconds=60)
 
 # `start_checkout`'s guard used to refuse a second checkout by checking
 # `sub.status` against a hand-maintained "terminal" list instead of asking
@@ -301,10 +323,21 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
         # once per customer: this subscription starts charging immediately.
         trial_ends_at = now
 
+    # `trial_ends_at` may already be stale by now (see `START_AT_LEAD_TIME`
+    # above) — re-read the clock rather than reusing the `now` captured at
+    # the top of the handler, so the lead-time check is judged against how
+    # much time has *actually* elapsed, not how much had elapsed when this
+    # request started.
+    razorpay_start_at = (
+        int(trial_ends_at.timestamp())
+        if trial_ends_at - datetime.now(timezone.utc) > START_AT_LEAD_TIME
+        else None
+    )
+
     created = razorpay_client.create_subscription(
         plan_id=razorpay_plan_id_for(payload.plan_id, payload.interval),
         customer_id=sub.razorpay_customer_id,
-        start_at=int(trial_ends_at.timestamp()),
+        start_at=razorpay_start_at,
         total_count=ANNUAL_CYCLES if payload.interval == INTERVAL_ANNUAL else MONTHLY_CYCLES,
         notes={"user_id": str(user.id)},
     )

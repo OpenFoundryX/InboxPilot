@@ -321,9 +321,10 @@ async def test_checkout_continues_a_still_running_trial_instead_of_restarting(
 
     await client.post("/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"})
 
-    start_at = datetime.fromtimestamp(
-        fake_razorpay["subscription"]["start_at"], tz=timezone.utc
-    )
+    raw_start_at = fake_razorpay["subscription"]["start_at"]
+    assert raw_start_at is not None
+    start_at = datetime.fromtimestamp(raw_start_at, tz=timezone.utc)
+    assert start_at > datetime.now(timezone.utc)
     assert abs((start_at - promised).total_seconds()) < 2
 
     from sqlalchemy import select
@@ -339,8 +340,19 @@ async def test_checkout_charges_immediately_once_the_trial_is_consumed(
     db, user, client, fake_razorpay
 ):
     """Trials are once per customer: after the window has elapsed, a new
-    checkout must start charging immediately (`start_at ≈ now`), not grant
-    another free week.
+    checkout must start charging immediately rather than grant another free
+    week.
+
+    "Immediately" means omitting `start_at` entirely, not sending a
+    timestamp that means "now" — by the time this request reaches Razorpay
+    (a `db.commit()` and, for a new customer, a `create_customer` round trip
+    later), a timestamp captured at the top of the handler is already in the
+    past, and Razorpay's API hard-rejects a past `start_at` with
+    `start_at cannot be lesser than the current time` (this is the exact
+    production bug: a trial-consumed user could not check out at all).
+    Razorpay treats `start_at` as optional and starts billing immediately
+    once the mandate is authorised, which is exactly the semantics wanted
+    here.
     """
     before = datetime.now(timezone.utc)
     db.add(
@@ -359,10 +371,38 @@ async def test_checkout_charges_immediately_once_the_trial_is_consumed(
 
     await client.post("/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"})
 
-    start_at = datetime.fromtimestamp(
-        fake_razorpay["subscription"]["start_at"], tz=timezone.utc
+    assert fake_razorpay["subscription"]["start_at"] is None
+
+
+async def test_checkout_omits_start_at_when_the_trial_ends_within_the_lead_time(
+    db, user, client, fake_razorpay
+):
+    """A trial ending a few seconds from now must not race the round trip to
+    Razorpay either. `start_checkout` makes a `db.commit()` and (for a new
+    customer) a `create_customer` HTTP call between capturing `now` and
+    calling `create_subscription` — a `start_at` inside that margin can go
+    stale and land in the past by the time Razorpay parses it, exactly like
+    the already-elapsed case. Anything under the lead-time threshold takes
+    the same immediate (`start_at=None`) path.
+    """
+    before = datetime.now(timezone.utc)
+    db.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=PLAN_PRO,
+            interval=INTERVAL_MONTHLY,
+            status=STATUS_CANCELLED,
+            razorpay_customer_id="cust_existing",
+            razorpay_subscription_id="sub_old_cancelled",
+            trial_ends_at=before + timedelta(seconds=30),
+            trial_consumed=True,
+        )
     )
-    assert abs((start_at - before).total_seconds()) < 5
+    await db.flush()
+
+    await client.post("/v1/billing/checkout", json={"plan_id": "pro", "interval": "monthly"})
+
+    assert fake_razorpay["subscription"]["start_at"] is None
 
 
 async def test_checkout_reuses_an_existing_customer(db, user, client, fake_razorpay):
