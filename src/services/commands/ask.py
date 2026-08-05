@@ -95,22 +95,10 @@ Example — question "Show me my important emails":
   "label:\"fyi\" newer_than:30d"
 ]}"""
 
-# What both surfaces owe the user regardless of how the reply is laid out:
-# accuracy about what was actually found. Presentation forks below, because the
-# two surfaces show the evidence very differently — an email has only the reply
-# body, while chat renders a card per source underneath it.
-GROUNDING_RULES = """You are InboxOS, the user's email assistant. Answer the user's
+ANSWER_RULES = """You are InboxOS, the user's email assistant. Answer the user's
 question directly and concisely, grounded ONLY in the email excerpts provided.
 
-Attachment awareness: each email shows how many files are attached. Distinguish a
-real attached file from content merely quoted or forwarded inside an email body — if
-a file was expected but the email has no attachment, say so. If the excerpts don't
-contain the answer, say what you found, state plainly what's missing, and suggest a
-concrete next step. Never invent emails, senders, or links."""
-
-# The email surface has no source cards, so the reply body IS the index: every
-# email the answer relies on has to appear there, linked, or it is unreachable.
-_EMAIL_FORMAT_RULES = """Format the reply in light Markdown for a clean email:
+Format the reply in light Markdown for a clean email:
 - Use **bold** for key facts (names, dates, the direct answer).
 - Whenever you mention more than one email, you MUST put each on its own line as a
   bullet ("- "). Never run several emails together in one paragraph.
@@ -122,12 +110,18 @@ _EMAIL_FORMAT_RULES = """Format the reply in light Markdown for a clean email:
 - If several emails share a subject and sender, do not repeat identical lines. Add
   whatever tells them apart (the date it arrived, the amount, the account) so each
   line is distinguishable, and say how many there are.
-- Keep it tight: a one-line direct answer first, then supporting detail."""
+- Keep it tight: a one-line direct answer first, then supporting detail.
 
-ANSWER_RULES = f"{GROUNDING_RULES}\n\n{_EMAIL_FORMAT_RULES}"
+Attachment awareness: each email shows how many files are attached. Distinguish a
+real attached file from content merely quoted or forwarded inside an email body — if
+a file was expected but the email has no attachment, say so. If the excerpts don't
+contain the answer, say what you found, state plainly what's missing, and suggest a
+concrete next step. Never invent emails, senders, or links."""
 
 # The email surface signs off; the web chat renders a live transcript and must not.
-_ANSWER_SYS = ANSWER_RULES + ("\n\nEnd your reply with a sign-off line containing only: — InboxOS")
+_ANSWER_SYS = ANSWER_RULES + (
+    "\n\nEnd your reply with a sign-off line containing only: — InboxOS"
+)
 
 
 def _client() -> OpenAI:
@@ -183,7 +177,9 @@ def plan_queries(subject: str | None, body: str | None) -> list[str]:
     return out
 
 
-def search_all(user_id: str, queries: list[str], per_query: int = _PER_QUERY) -> list[EmailSummary]:
+def search_all(
+    user_id: str, queries: list[str], per_query: int = _PER_QUERY
+) -> list[EmailSummary]:
     """Run every planned query, merge results, dedupe by message id.
 
     Broad keyword queries would otherwise echo back the user's own self-email
