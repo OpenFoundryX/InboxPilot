@@ -212,8 +212,22 @@ nonexistent object.
 navigate straight to the detail page with the **Live** badge, timer, and waveform,
 already holding the target it will PUT to on Stop.
 
-The content type is fixed at `audio/webm` and the size bound is
-`MEDIA_UPLOAD_MAX_BYTES`, since neither is known when recording starts.
+The content type is fixed at `audio/webm`, since it isn't known when recording
+starts.
+
+**Amended during implementation.** Two things about signing a URL for a file that
+does not exist yet only became visible against the S3 API:
+
+- **The size cannot be signed.** A presigned PUT pins `Content-Length` exactly,
+  not as a ceiling, so signing the plan limit would reject every real recording —
+  the browser sends the true size. Live uploads therefore leave the length
+  unsigned, and `confirm()` enforces the limit against the object once it exists.
+  An ordinary upload still signs its declared size, because there the size *is*
+  known.
+- **The URL has to outlive the meeting.** It is signed at Start and used at Stop,
+  so the one-hour default would strand any call that ran longer — at the single
+  moment where failing loses the recording outright. Live URLs use
+  `MEDIA_LIVE_URL_TTL_SECONDS` (6 hours).
 
 `MediaRecorder` records Opus into memory — two hours is roughly 30 MB. On Stop the
 browser does the same PUT and the same `uploads/complete` as §5, and the row follows
@@ -379,3 +393,17 @@ the browser → confirm the same → paste a Meet link → confirm a bot joins.
   mid-call already behaves.
 - Mic-only capture means the far side of a video call is captured only through the
   speakers. Tab audio is the fix when someone asks for it.
+- A live recording's upload URL has an unsigned length for 6 hours (§6). The key is
+  unguessable and only ever handed to its owner, so the exposure is a user
+  overfilling their own reserved key; a bucket-side size limit would close it.
+
+## Found while implementing
+
+- `retention.sweep` has been in the beat schedule since retention shipped but was
+  never in `worker.TASK_MODULES`, so no worker ever registered it and every nightly
+  dispatch was rejected as an unknown task. **No retention pruning has ever run.**
+  Fixed here because this work extends that job.
+- `isUpcoming` in the web app keyed on status alone, which would have filed an
+  upload under "Upcoming" during the seconds it sits at `pending` — putting a
+  meeting that already happened in the list of ones that haven't. Now excludes
+  self-hosted sources.
