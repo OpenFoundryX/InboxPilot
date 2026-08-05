@@ -33,6 +33,7 @@ from schemas.meetings import (
     JoinRequest,
     MeetingDetail,
     MeetingRead,
+    MeetingUpdate,
     SettingsRead,
     SettingsUpdate,
     StartLiveRequest,
@@ -45,6 +46,7 @@ from services.meetings.links import find_meeting_link, link_from_event
 from services.meetings.media import (
     MediaRejected,
     confirm,
+    discard,
     reserve,
     reserve_for_live,
 )
@@ -342,6 +344,75 @@ async def get_meeting(meeting_id: uuid.UUID, user: CurrentUser, db: DbSession) -
     meeting = await _owned(db, meeting_id, user.id)
     await resolve_recording_url(db, meeting)
     return meeting
+
+
+@router.patch("/{meeting_id}", response_model=MeetingRead)
+async def rename_meeting(
+    meeting_id: uuid.UUID, payload: MeetingUpdate, user: CurrentUser, db: DbSession
+) -> Meeting:
+    """Rename a meeting.
+
+    Allowed at any point in its life, including mid-recording: a title is a
+    label the user owns, not part of the capture, so there is no state in which
+    correcting it should be refused.
+    """
+    meeting = await _owned(db, meeting_id, user.id)
+
+    title = (payload.title or "").strip()
+    # Empty clears the name rather than storing "". The list already renders an
+    # untitled meeting as "Meeting on <date>", so null is the shape that means
+    # "no name" everywhere else in this table.
+    meeting.title = title or None
+    await db.flush()
+
+    log.info("meetings.renamed", user_id=str(user.id), meeting_id=str(meeting_id))
+    return meeting
+
+
+@router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_meeting(meeting_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    """Delete a meeting, its recording, and any bot still attending it.
+
+    Irreversible, and ordered so that everything which can fail happens while
+    the row is still there to retry from. Metered bot-seconds are deliberately
+    left alone: returning them would make delete-after-every-call an unlimited
+    -usage loophole. Reminders raised from action items also survive — they
+    carry no reference to the meeting, and a commitment does not stop existing
+    because its recording was deleted.
+    """
+    meeting = await _owned(db, meeting_id, user.id)
+
+    # A bot still in the call has to go first. If the provider refuses, stop
+    # here: a notetaker sitting in a meeting the user believes they deleted is
+    # a privacy failure, and it is better to make them retry than to let that
+    # happen quietly. A pending or finished bot has nothing to recall.
+    if meeting.bot_id and meeting.status in ACTIVE_STATUSES:
+        try:
+            await run_in_threadpool(get_provider().cancel_bot, meeting.bot_id)
+        except MeetingBotError as exc:
+            log.warning(
+                "meetings.delete_cancel_failed", meeting_id=str(meeting_id), error=str(exc)
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Couldn't recall the notetaker, so the meeting was kept: {exc}",
+            ) from exc
+
+    # Then the bytes. Dropping the row while the object survives orphans it for
+    # good — the key is the only thing that knew where it was.
+    if meeting.media_key and not await discard(meeting):
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Couldn't delete the recording, so the meeting was kept. Try again.",
+        )
+
+    await db.delete(meeting)
+    log.info(
+        "meetings.deleted",
+        user_id=str(user.id),
+        meeting_id=str(meeting_id),
+        source=meeting.source,
+    )
 
 
 @router.post("/bot", response_model=MeetingRead, status_code=status.HTTP_202_ACCEPTED)

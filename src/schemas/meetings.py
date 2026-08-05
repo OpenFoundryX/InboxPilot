@@ -101,6 +101,17 @@ class UploadTarget(BaseModel):
     expires_at: datetime
 
 
+class MeetingUpdate(BaseModel):
+    """Rename a meeting.
+
+    An empty title is meaningful, not a mistake: it clears the name and lets the
+    list fall back to naming the meeting by its date, which is what an untitled
+    meeting looked like before anyone typed anything.
+    """
+
+    title: str | None = Field(default=None, max_length=300)
+
+
 class EnableBotRequest(BaseModel):
     """Turn the notetaker on for an event already on the user's calendar.
 
