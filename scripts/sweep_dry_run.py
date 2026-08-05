@@ -84,14 +84,17 @@ def main() -> None:
         if c.key in config.category_keys and c.is_enabled
     ]
 
+    # The same one-query-per-pass lookup `sweep_user` does. Printed because
+    # "0 drafts created" is most often this, not an empty query.
+    replied = sweep.replied_thread_ids(user_id)
+    print(f"threads replied : {len(replied)} in the last {sweep.LOOKBACK_DAYS}d (candidates in these are skipped)")
+
     total = 0
+    eligible = 0
     for category_key, gmail_label in targets:
-        # Kept byte-identical to `sweep.sweep_user`'s query on purpose: the whole
-        # point is to see what that pass would see, not something close to it.
-        query = (
-            f'label:"{gmail_label}" newer_than:{sweep.LOOKBACK_DAYS}d '
-            f'-in:sent -in:draft -label:"{gmail.DRAFTED_LABEL}"'
-        )
+        # `sweep.candidate_query` rather than a copy of it: a diagnostic that
+        # drifts from the thing it diagnoses is worse than none.
+        query = sweep.candidate_query(gmail_label)
         print(f"\n--- {category_key}  ({gmail_label}) ---")
         print(f"query: {query}")
         try:
@@ -103,14 +106,28 @@ def main() -> None:
         print(f"  {len(emails)} candidate(s)")
         for e in emails:
             date = e.date.isoformat() if e.date else "(no date)"
-            print(f"  - {date}  {(e.sender or '?')[:40]:40}  {(e.subject or '(no subject)')[:60]}")
+            skip = "  [SKIP: already replied]" if e.thread_id in replied else ""
+            if not skip:
+                eligible += 1
+            print(
+                f"  - {date}  {(e.sender or '?')[:36]:36}  "
+                f"{(e.subject or '(no subject)')[:52]}{skip}"
+            )
         total += len(emails)
 
-    print(f"\ncandidates found: {total}")
-    print(f"would attempt   : {min(total, limit)}")
-    print(f"est. pass length: ~{min(total, limit) * SECONDS_PER_DRAFT}s")
-    if total > limit:
-        print(f"  NOTE: {total - limit} left for the next pass (quota or ceiling).")
+    print(f"\ncandidates found : {total}")
+    print(f"after skips      : {eligible}")
+    print(f"would attempt    : {min(eligible, limit)}")
+    print(f"est. pass length : ~{min(eligible, limit) * SECONDS_PER_DRAFT}s")
+    if eligible > limit:
+        print(f"  NOTE: {eligible - limit} left for the next pass (quota or ceiling).")
+    if total == 0:
+        print(
+            "\nNo candidates. In order of likelihood: everything already carries "
+            f'the "{gmail.DRAFTED_LABEL}" label from an earlier pass; nothing in '
+            f"these categories arrived in the last {sweep.LOOKBACK_DAYS} days; or "
+            "`to:me` is excluding it because you are not a named recipient."
+        )
 
     if not args.dry_run:
         return
