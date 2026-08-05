@@ -13,18 +13,38 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.routine_slugs import (
+    ROUTINE_BRIEFING as ROUTINE_BRIEFING,
+)
+from core.routine_slugs import (
+    ROUTINE_CATCHUP as ROUTINE_CATCHUP,
+)
+from core.routine_slugs import (
+    ROUTINE_CHASE_THREADS as ROUTINE_CHASE_THREADS,
+)
+from core.routine_slugs import (
+    ROUTINE_DEADLINE_SCAN as ROUTINE_DEADLINE_SCAN,
+)
+from core.routine_slugs import (
+    ROUTINE_DOUBLE_BOOKINGS as ROUTINE_DOUBLE_BOOKINGS,
+)
+from core.routine_slugs import (
+    ROUTINE_INVOICES as ROUTINE_INVOICES,
+)
+from core.routine_slugs import (
+    ROUTINE_NEWSLETTER_DIGEST as ROUTINE_NEWSLETTER_DIGEST,
+)
+from core.routine_slugs import (
+    ROUTINE_RECONNECT as ROUTINE_RECONNECT,
+)
+from core.routine_slugs import (
+    ROUTINE_SCHEDULE_TRUSTED as ROUTINE_SCHEDULE_TRUSTED,
+)
 from models.base import Base, TimestampMixin, UUIDMixin
 
-# Routine types (also the dispatcher keys).
-ROUTINE_BRIEFING = "briefing"  # daily "what needs your attention" digest
-ROUTINE_NEWSLETTER_DIGEST = "newsletter_digest"  # roundup of marketing/newsletters
-ROUTINE_CHASE_THREADS = "chase_threads"  # threads you're awaiting a reply on
-ROUTINE_RECONNECT = "reconnect"  # nudge to reach out before threads go cold
-ROUTINE_DEADLINE_SCAN = "deadline_scan"  # extract deadlines into reminders
-ROUTINE_CATCHUP = "catchup"  # digest of important unread
-ROUTINE_INVOICES = "invoices"  # summarize recent invoices/receipts
-ROUTINE_DOUBLE_BOOKINGS = "double_bookings"  # heads-up when meetings collide
-ROUTINE_SCHEDULE_TRUSTED = "schedule_trusted"  # draft slot proposals for VIP meeting requests
+# The slugs above are re-exported from `core.routine_slugs`, which holds them so
+# that `core.plans` can name them without `core` importing `models` — see that
+# module for why the cycle that created mattered.
 
 
 class Routine(UUIDMixin, TimestampMixin, Base):
