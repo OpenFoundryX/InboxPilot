@@ -171,6 +171,8 @@ def draft_reply(
     sender: str | None,
     subject: str | None,
     body: str | None,
+    to: str | None = None,
+    cc: str | None = None,
     thread_id: str | None = None,
     category_key: str | None = None,
     thread_excerpt: str | None = None,
@@ -205,6 +207,8 @@ def draft_reply(
         sender=sender,
         subject=subject,
         body=body,
+        to=to,
+        cc=cc,
         thread_excerpt=thread_excerpt,
         user_name=user_name,
     )

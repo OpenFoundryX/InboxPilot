@@ -14,9 +14,11 @@ merely loses a fact.
 import uuid
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import run_async, with_worker_session
+from models.users import User
 from models.drafts import (
     PURPOSE_INSTRUCTION,
     PURPOSE_KNOWLEDGE,
@@ -85,6 +87,12 @@ class DraftConfig:
     follow_up_enabled: bool
     follow_up_days: int
     model: str | None
+    # The user's own address. Carried so the prompt can point at which of a
+    # message's recipients is them — listing To/Cc is no use to a model that
+    # cannot tell which entry it is being asked about. `None` where the address
+    # could not be loaded, in which case the recipient lines are omitted
+    # entirely rather than shown unanchored.
+    account_email: str | None = None
     instruction_texts: tuple[str, ...] = field(default=())
     knowledge_texts: tuple[str, ...] = field(default=())
 
@@ -97,7 +105,12 @@ async def load_config(db: AsyncSession, user_id: uuid.UUID) -> DraftConfig:
     row = await get_or_create_settings(db, user_id)
     files = await list_files(db, user_id)
     enabled = [f for f in files if f.is_enabled]
+    # One extra read per config load, and the config is loaded once per sweep,
+    # not once per message. Worth it: without the address there is no way to
+    # tell a message addressed to the user from one they were copied on.
+    account_email = await db.scalar(select(User.email).where(User.id == user_id))
     return DraftConfig(
+        account_email=account_email,
         is_enabled=row.is_enabled,
         category_keys=tuple(row.category_keys or ()),
         selectivity=row.selectivity,
@@ -113,9 +126,7 @@ async def load_config(db: AsyncSession, user_id: uuid.UUID) -> DraftConfig:
         instruction_texts=tuple(
             f.extracted_text for f in enabled if f.purpose == PURPOSE_INSTRUCTION
         ),
-        knowledge_texts=tuple(
-            f.extracted_text for f in enabled if f.purpose == PURPOSE_KNOWLEDGE
-        ),
+        knowledge_texts=tuple(f.extracted_text for f in enabled if f.purpose == PURPOSE_KNOWLEDGE),
     )
 
 
@@ -159,12 +170,20 @@ def build_system_prompt(config: DraftConfig, user_name: str | None = None) -> st
         "- Never promise anything the user has not already said they would do.",
         "- Do not restate the whole incoming email back at the sender.",
         "- Output plain text, not HTML or markdown.",
+        "- If the recipients are shown and the user's own address appears only in "
+        "Cc, they were copied for visibility, not asked. Decline unless the "
+        "message puts a question or a request to them by name.",
+        "- Decline anything addressed to someone else, to a list, or to nobody in "
+        "particular. A reply the sender did not ask the user for is worse than "
+        "no reply at all.",
         "",
         f"Tone: {TONE_GUIDANCE.get(config.tone, TONE_GUIDANCE['friendly'])}",
         f"Length: {LENGTH_GUIDANCE.get(config.length, LENGTH_GUIDANCE['medium'])}",
         "",
         "When to reply at all: "
-        + SELECTIVITY_GUIDANCE.get(config.selectivity, SELECTIVITY_GUIDANCE[SELECTIVITY_WHEN_NEEDED]),
+        + SELECTIVITY_GUIDANCE.get(
+            config.selectivity, SELECTIVITY_GUIDANCE[SELECTIVITY_WHEN_NEEDED]
+        ),
     ]
 
     if config.custom_instructions:
@@ -206,8 +225,16 @@ def build_user_prompt(
     subject: str | None,
     body: str | None,
     thread_excerpt: str | None = None,
+    to: str | None = None,
+    cc: str | None = None,
 ) -> str:
-    """The user message: the email to answer, plus any reference material."""
+    """The user message: the email to answer, plus any reference material.
+
+    `to`/`cc` are shown only when the user's own address is known, because a
+    recipient list the model cannot locate itself in tells it nothing. Both are
+    frequently absent — the Gmail trigger payload does not always carry them —
+    and absent must read as unknown, never as "nobody".
+    """
     parts: list[str] = []
 
     if config.knowledge_texts:
@@ -223,7 +250,18 @@ def build_user_prompt(
                 "",
             ]
 
-    parts += ["EMAIL TO REPLY TO:", f"From: {sender or 'unknown'}", f"Subject: {subject or '(no subject)'}"]
+    parts += ["EMAIL TO REPLY TO:", f"From: {sender or 'unknown'}"]
+
+    if config.account_email and (to or cc):
+        parts.append(f"To: {to or '(none)'}")
+        if cc:
+            parts.append(f"Cc: {cc}")
+        parts.append(
+            f"(your address is {config.account_email} — check whether it is in To "
+            "or only in Cc before deciding to reply)"
+        )
+
+    parts.append(f"Subject: {subject or '(no subject)'}")
     if thread_excerpt:
         parts += ["", "Earlier in this thread:", thread_excerpt[:EMAIL_BUDGET_CHARS]]
     parts += ["", (body or "").strip()[:EMAIL_BUDGET_CHARS] or "(no body)"]

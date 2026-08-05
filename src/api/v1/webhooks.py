@@ -123,6 +123,12 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         subject=data.get("subject"),
         snippet=_snippet(data),
         thread_id=data.get("thread_id"),
+        # Recipients, so drafting can tell mail addressed to the user from mail
+        # they were merely copied on. Frequently absent from the trigger
+        # payload, and absent must stay None — an empty string would read as
+        # "addressed to nobody" rather than "unknown".
+        to=data.get("to"),
+        cc=data.get("cc"),
         # Passed through for auto-drafting, which chains off classification. The
         # classifier keeps using the truncated preview above; a draft has to see
         # the whole message, and carrying it here is what saves the draft job a
@@ -164,9 +170,10 @@ async def meeting_bot_webhook(request: Request, db: DbSession) -> dict[str, str]
 
     meeting.status = new_status
     meeting.status_detail = event.detail
+
     if new_status == STATUS_RECORDING and not meeting.joined_at:
         meeting.joined_at = datetime.now(timezone.utc)
-    # The bot id is how a later callback finds this row when metadata is absent.
+
     if not meeting.bot_id:
         meeting.bot_id = event.bot_id
 
@@ -181,6 +188,7 @@ async def meeting_bot_webhook(request: Request, db: DbSession) -> dict[str, str]
     if new_status == STATUS_RECORDED:
         process_meeting.delay(str(meeting.id))
         return {"status": "processing"}
+
     return {"status": new_status}
 
 

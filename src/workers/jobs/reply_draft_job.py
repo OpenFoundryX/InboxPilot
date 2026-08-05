@@ -30,6 +30,8 @@ def reply_draft(
     body: str | None = None,
     thread_id: str | None = None,
     category_key: str | None = None,
+    to: str | None = None,
+    cc: str | None = None,
 ) -> dict:
     draft_id = draft_reply(
         user_id,
@@ -37,6 +39,8 @@ def reply_draft(
         sender=sender,
         subject=subject,
         body=body,
+        to=to,
+        cc=cc,
         thread_id=thread_id,
         category_key=category_key,
     )

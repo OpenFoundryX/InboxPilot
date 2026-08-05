@@ -54,6 +54,58 @@ MAX_PER_CATEGORY = None
 SWEEP_SAFETY_CEILING = 200
 
 
+def candidate_query(gmail_label: str) -> str:
+    """The Gmail query for one category's undrafted mail worth replying to.
+
+    `to:me` drops mail the user is not a named recipient of at all — sent to a
+    list, to a group alias that fans out, or to someone else and merely
+    forwarded or auto-filed into the mailbox. That is the bulk of "why is there
+    a draft on this?", and excluding it here costs nothing.
+
+    It is deliberately *not* the whole fix. Gmail's `to:` matches Cc as well as
+    To, so mail the user was only copied on still passes this filter. Screening
+    that out needs to read the headers and weigh whether the message actually
+    asks the user anything, which is a judgement — so it happens in the prompt
+    (`context.build_user_prompt` shows To/Cc and names the user's own address),
+    not here. Cheap filter first, judgement second.
+
+    `-label:DRAFTED_LABEL` is what makes the pass idempotent. Nothing about
+    drafts is stored, so without this exclusion every sweep would re-draft the
+    same mail — a fresh reply to the same email every 15 minutes.
+    """
+    return (
+        f'label:"{gmail_label}" newer_than:{LOOKBACK_DAYS}d to:me '
+        f'-in:sent -in:draft -label:"{gmail.DRAFTED_LABEL}"'
+    )
+
+
+def replied_thread_ids(user_id: str) -> set[str]:
+    """Threads the user has already sent into inside the lookback window.
+
+    `-in:sent` on the candidate query excludes the user's own *messages*, not
+    the *threads* they belong to. So an incoming message the user answered by
+    hand kept its category label, never got `DRAFTED_LABEL`, and stayed a
+    candidate — and because `create_draft` attaches to the thread, the draft
+    landed underneath the user's own reply. From the mailbox that reads as the
+    assistant replying to you.
+
+    One query for the whole pass rather than a thread fetch per candidate: the
+    set is small, the lookback is the same two days, and the alternative is an
+    API call per message.
+
+    A failure here costs precision, not the pass — an empty set just means no
+    thread is skipped, which is the behaviour this function replaced.
+    """
+    try:
+        sent = gmail.fetch_by_query(
+            user_id, f"in:sent newer_than:{LOOKBACK_DAYS}d", None, verbose=False
+        )
+    except Exception:
+        log.warning("drafts.sweep_sent_lookup_failed", user_id=user_id, exc_info=True)
+        return set()
+    return {e.thread_id for e in sent if e.thread_id}
+
+
 async def _labels_for_keys(db, user_id: uuid.UUID, keys: tuple[str, ...]) -> list[tuple[str, str]]:
     """Map selected category keys to (key, gmail_label), skipping disabled ones."""
     categories = await get_or_create_categories(db, user_id)
@@ -100,17 +152,15 @@ def sweep_user(
     if not targets:
         return 0
 
+    # One lookup for the whole pass, before any category is queried.
+    replied = replied_thread_ids(user_id)
+
     created = 0
+    skipped_replied = 0
     for category_key, gmail_label in targets:
         if created >= limit:
             break
-        # `-label:DRAFTED_LABEL` is what makes this pass idempotent. Nothing about
-        # drafts is stored, so without this exclusion every sweep would re-draft
-        # the same mail — a fresh reply to the same email every 15 minutes.
-        query = (
-            f'label:"{gmail_label}" newer_than:{LOOKBACK_DAYS}d '
-            f'-in:sent -in:draft -label:"{gmail.DRAFTED_LABEL}"'
-        )
+        query = candidate_query(gmail_label)
         try:
             emails = gmail.fetch_by_query(user_id, query, MAX_PER_CATEGORY, verbose=True)
         except Exception:
@@ -122,11 +172,18 @@ def sweep_user(
                 break
             if not email.id:
                 continue
+            if email.thread_id and email.thread_id in replied:
+                # Answered by hand already. Deliberately not marked as drafted:
+                # the marker is a Gmail write per message, and this same lookup
+                # excludes the thread again next pass for free.
+                skipped_replied += 1
+                continue
             try:
                 draft_id = draft_reply(
                     user_id,
                     message_id=email.id,
                     sender=email.sender,
+                    to=email.to,
                     subject=email.subject,
                     body=email.body or email.snippet,
                     thread_id=email.thread_id,
@@ -141,6 +198,11 @@ def sweep_user(
             if draft_id:
                 created += 1
 
-    if created:
-        log.info("drafts.sweep_created", user_id=user_id, count=created)
+    if created or skipped_replied:
+        log.info(
+            "drafts.sweep_created",
+            user_id=user_id,
+            count=created,
+            skipped_already_replied=skipped_replied,
+        )
     return created
