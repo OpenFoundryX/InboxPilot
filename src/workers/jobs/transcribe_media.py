@@ -15,14 +15,13 @@ from datetime import datetime, timezone
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from core.plans import get_plan
-from integrations.storage import get_storage
 from integrations.storage.base import StorageError
 from models.meetings import STATUS_FAILED, STATUS_PROCESSED, Meeting
 from services.billing.access import effective_plan_id
 from services.billing.store import get_subscription
 from services.billing.usage import add_bot_seconds
 from services.meetings.pipeline import finalize
-from services.meetings.transcribe import TranscriptionError, transcribe_url
+from services.meetings.transcribe import TranscriptionError, transcribe_key
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
@@ -84,8 +83,10 @@ async def _run(db, meeting_id: str) -> dict:
         await db.flush()
 
     if not meeting.transcript:
-        url, _ = get_storage().presign_get(meeting.media_key)
-        transcript, duration = transcribe_url(url)
+        # By key, not by presigned URL: a signed link points at wherever a
+        # browser reaches the bucket, which from in here resolves to this
+        # container's own localhost.
+        transcript, duration = transcribe_key(meeting.media_key)
 
         # Metered from the media's own duration, before the empty-transcript
         # return below and guarded on `is None` — same contract as the bot

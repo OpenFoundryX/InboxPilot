@@ -144,6 +144,15 @@ class S3Storage:
 
         return url, datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
+    def download_to(self, key: str, dest) -> None:
+        # Goes through the internal client: this is the process fetching bytes
+        # for itself, not a link for someone else's browser. boto3's transfer
+        # manager streams and parallelizes, so a gigabyte never lands in memory.
+        try:
+            _client().download_file(settings.S3_BUCKET, key, str(dest))
+        except (BotoCoreError, ClientError) as exc:
+            raise StorageError(f"Could not download {key}: {exc}") from exc
+
     def head(self, key: str) -> StoredObject | None:
         try:
             data = _client().head_object(Bucket=settings.S3_BUCKET, Key=key)

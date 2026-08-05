@@ -82,6 +82,16 @@ class MediaStorage(Protocol):
         carries `expires_at`.
         """
 
+    def download_to(self, key: str, dest) -> None:
+        """Stream an object to a local path, for this process to read.
+
+        Distinct from `presign_get` on purpose. A signed URL is for handing to
+        a browser, so it points at wherever the browser reaches the bucket —
+        which is not somewhere a worker can necessarily resolve, and is a
+        needless signature besides when the caller already holds credentials.
+        Anything server-side that needs the bytes uses this.
+        """
+
     def head(self, key: str) -> StoredObject | None:
         """What is actually stored under `key`, or None if nothing is.
 

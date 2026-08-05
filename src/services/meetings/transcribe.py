@@ -21,12 +21,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import httpx
 from openai import OpenAI
 
 from core.config import settings
 from core.logging import get_logger
 from integrations.meetingbot.base import Transcript, TranscriptSegment
+from integrations.storage import get_storage
+from integrations.storage.base import StorageError
 
 log = get_logger(__name__)
 
@@ -57,13 +58,15 @@ _CHUNK_SECONDS = 15 * 60
 #: At the bitrate above, one second is roughly 4 KB.
 _MIN_CHUNK_BYTES = 8 * 1024
 
-#: Long enough for a large download over a slow link, bounded so a hung
-#: connection cannot occupy a worker forever.
-_DOWNLOAD_TIMEOUT = httpx.Timeout(60.0, read=600.0)
 
+def transcribe_key(key: str) -> tuple[Transcript, float]:
+    """Fetch, transcode, and transcribe stored media. Returns text and duration.
 
-def transcribe_url(url: str) -> tuple[Transcript, float]:
-    """Download, transcode, and transcribe media. Returns the text and duration.
+    Takes a storage key rather than a URL. The bytes are pulled with the
+    credentials this process already has, through the same internal endpoint it
+    uses for everything else — a presigned URL points at wherever a *browser*
+    reaches the bucket, which a worker inside the network generally cannot
+    resolve at all.
 
     The duration comes from the media itself rather than from anything the
     client said, because it is what meters against the user's plan.
@@ -78,7 +81,7 @@ def transcribe_url(url: str) -> tuple[Transcript, float]:
 
     with tempfile.TemporaryDirectory(prefix="meeting-media-") as tmp:
         workdir = Path(tmp)
-        source = _download(url, workdir / "source")
+        source = _download(key, workdir / "source")
         audio = _to_speech_audio(source, workdir / "audio.mp3")
         # The source can be large; releasing it before transcription halves peak
         # disk while the chunks are written.
@@ -99,22 +102,18 @@ def _require_ffmpeg() -> None:
         )
 
 
-def _download(url: str, dest: Path) -> Path:
-    """Stream a presigned URL to disk.
+def _download(key: str, dest: Path) -> Path:
+    """Pull the object to disk, never into memory.
 
-    Streamed rather than read into memory: these are meeting recordings up to a
-    gigabyte, and a worker that buffers one is a worker that dies on the second.
+    These are meeting recordings up to a gigabyte, and a worker that buffers
+    one is a worker that dies on the second. boto3's transfer manager streams.
     """
     try:
-        with httpx.stream("GET", url, timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            with dest.open("wb") as handle:
-                for block in resp.iter_bytes(chunk_size=1024 * 1024):
-                    handle.write(block)
-    except httpx.HTTPError as exc:
+        get_storage().download_to(key, dest)
+    except StorageError as exc:
         raise TranscriptionError(f"Could not download media: {exc}") from exc
 
-    if dest.stat().st_size == 0:
+    if not dest.exists() or dest.stat().st_size == 0:
         raise TranscriptionError("Downloaded media is empty")
     return dest
 
@@ -250,4 +249,4 @@ def _transcribe_one(path: Path) -> str:
     return str(text or "").strip()
 
 
-__all__ = ["transcribe_url", "TranscriptionError"]
+__all__ = ["transcribe_key", "TranscriptionError"]
