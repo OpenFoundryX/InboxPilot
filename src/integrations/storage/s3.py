@@ -35,6 +35,19 @@ def _build(endpoint: str | None):
         raise StorageError("S3_BUCKET is not configured")
     if not (settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY):
         raise StorageError("S3 credentials are not configured")
+    # A public endpoint with no internal one is always a half-finished config,
+    # never a deployment: the bucket cannot be on AWS for us and somewhere else
+    # for the browser. Left alone it fails in the worst possible place —
+    # presigning uses the public endpoint and succeeds, so the upload goes
+    # through, and only the confirmation afterwards discovers it has been
+    # talking to real AWS all along. By then the user has recorded a meeting
+    # and lost it. Refusing up front turns that into an obvious message.
+    if settings.S3_PUBLIC_ENDPOINT_URL.strip() and not settings.S3_ENDPOINT_URL.strip():
+        raise StorageError(
+            "S3_PUBLIC_ENDPOINT_URL is set but S3_ENDPOINT_URL is not — set the "
+            "endpoint the API itself uses (http://minio:9000 for local MinIO), "
+            "or clear both to use AWS"
+        )
     return boto3.client(
         "s3",
         endpoint_url=endpoint or None,
