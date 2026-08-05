@@ -111,8 +111,10 @@ def sweep_user(
     `workers.jobs.drafts_sweep.remaining_drafts`); without capping against it,
     a user near their limit could take a full `MAX_PER_SWEEP` batch of nudges
     and land over quota, the same exactness problem `sweep.sweep_user` guards
-    against. `effective_limit` is reused from there, but with this module's
-    own `MAX_PER_SWEEP` (5, not `sweep.py`'s 10) passed explicitly.
+    against. `effective_limit` is reused from there, but with this module's own
+    `MAX_PER_SWEEP` passed explicitly: a nudge pass is not a backlog drain, so
+    it must not inherit `sweep.SWEEP_SAFETY_CEILING`. Five unanswered threads
+    chased at once is already the most anyone wants in a day.
     """
     if not config.follow_up_enabled:
         return 0

@@ -50,16 +50,29 @@ FOLLOW_UP_INTERVAL_HOURS = 24
 # both are catch-up jobs whose next run recovers the skip, whereas an
 # overshoot past the quota is not something a later run can undo.
 DRAFTS_LOCK = "drafts.quota"
-# `single_run`'s own default (300s) equals `drafts.sweep`'s beat interval
-# exactly (`beat_schedule.py`). A pass can make up to 10 LLM generations per
-# due user (`sweep.MAX_PER_SWEEP`), so a run that takes close to 300s is
-# realistic, not a corner case — and once it does, the lock expires mid-run,
-# the next tick acquires, and both passes spend the same stale `budget`
-# snapshot, which is exactly the overshoot this lock exists to prevent. 1800s
-# is comfortably above any plausible run length for either task sharing this
-# key. See `core.locks.single_run`'s docstring for the separate, unfixed
-# fencing-token gap this doesn't address.
-DRAFTS_LOCK_TTL = 1800
+# Rough end-to-end cost of one generation: the LLM call, the Gmail draft create,
+# and the label write that marks the source message. Measured loosely, and only
+# ever used to size the lock below — it does not need to be exact, it needs to
+# not be optimistic.
+SECONDS_PER_DRAFT = 30
+
+# `single_run`'s own default (300s) equals `drafts.sweep`'s beat interval exactly
+# (`beat_schedule.py`), so a pass running its full TTL would let the lock expire
+# mid-run, the next tick acquire, and both passes spend the same stale `budget`
+# snapshot — exactly the overshoot this lock exists to prevent.
+#
+# Derived from the ceiling rather than written as a number, because the two must
+# move together: `sweep` now clears its whole window in one pass instead of ten
+# drafts per tick, so the worst-case run got an order of magnitude longer, and a
+# hand-written TTL would silently stop covering it the next time the ceiling is
+# raised. A test asserts this stays ahead of the worst case.
+#
+# The cost of a TTL this long is that a worker killed outright (no `finally`)
+# wedges the key for its remainder, and `drafts.follow_up` shares it. Follow-ups
+# are daily, so a delayed tick recovers on the next hour; an overshot monthly
+# quota does not recover at all. See `core.locks.single_run`'s docstring for the
+# separate, unfixed fencing-token gap this doesn't address.
+DRAFTS_LOCK_TTL = int(sweep.SWEEP_SAFETY_CEILING * SECONDS_PER_DRAFT * 1.2)
 
 
 def _is_due(last: datetime | None, delta: timedelta) -> bool:
@@ -144,10 +157,13 @@ def drafts_sweep() -> dict:
             try:
                 # `budget` is this user's remaining monthly quota, computed by
                 # `_due_users` at the top of this run. Handing it to `sweep_user`
-                # is what keeps the quota exact rather than per-sweep: without it,
-                # a user sitting at 19 of 20 drafts would get a whole
-                # `MAX_PER_SWEEP` batch and finish over quota. The lock above is
-                # what makes that snapshot trustworthy for the length of this run.
+                # is what keeps the quota exact: a pass now clears its whole
+                # window rather than a fixed batch, so without `budget` a user
+                # sitting at 19 of 20 drafts would draft the entire backlog and
+                # finish far over quota. It is the *only* bound that applies on a
+                # metered plan — `sweep.SWEEP_SAFETY_CEILING` sits behind it for
+                # unlimited plans. The lock above is what makes that snapshot
+                # trustworthy for the length of this run.
                 #
                 # Metering happens inside `services.drafts.create` now, once per
                 # draft actually made, not here in bulk — that is the one funnel

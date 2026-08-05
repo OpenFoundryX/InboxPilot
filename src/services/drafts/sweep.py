@@ -4,6 +4,14 @@ The arrival job handles mail as it lands, so this exists for the gaps — drafti
 switched on after the mail arrived, a category added later, a worker that was
 down, an LLM call that failed all its retries.
 
+A pass clears the whole window it can see rather than trickling a fixed batch
+per tick. The previous caps (25 candidates per category, 10 drafts per pass)
+meant a real backlog drained over successive 15-minute ticks, so mail from two
+days ago could still be waiting for its draft hours after drafting was switched
+on — which defeats the point of a catch-up pass. What bounds a pass now is the
+user's remaining monthly quota, with `SWEEP_SAFETY_CEILING` behind it for plans
+that have no quota to bind instead.
+
 One Gmail query per selected category rather than one combined query. The
 combined form would be cheaper, but `EmailSummary.labels` carries Gmail *label
 ids* (`Label_17`), not names, so a batched result could not be attributed back to
@@ -24,13 +32,26 @@ log = get_logger(__name__)
 
 # How far back a catch-up pass looks. Long enough to cover a worker outage or a
 # setting flipped on this morning, short enough that enabling drafts does not
-# retroactively fill the mailbox with replies to week-old mail.
+# retroactively fill the mailbox with replies to week-old mail. This window is
+# the real bound on how much work a pass can find.
 LOOKBACK_DAYS = 2
-# Candidates pulled per category.
-MAX_PER_CATEGORY = 25
-# Drafts created per user per sweep, across all categories. Bounds LLM spend and
-# keeps a backlog from arriving as one wall of drafts.
-MAX_PER_SWEEP = 10
+
+# Candidates pulled per category. `None` makes `gmail.fetch_by_query` page until
+# the query is exhausted (bounded by its own `FETCH_ALL_CAP`) instead of taking
+# the newest N. With a fixed 25 a category holding more than that only ever gave
+# up its newest page per tick, so a real backlog drained a page at a time over
+# successive sweeps rather than in the pass that found it.
+MAX_PER_CATEGORY = None
+
+# A circuit breaker, not a throttle. A pass now drafts everything undrafted in
+# the window, bounded by the user's remaining monthly quota — see
+# `effective_limit`. This ceiling only binds when the plan has no quota to bind
+# instead, and exists so a pathological backlog cannot start an unbounded run.
+#
+# It is coupled to `workers.jobs.drafts_sweep.DRAFTS_LOCK_TTL`, which is derived
+# from it: raising this without that lets a pass outlive its lock, and two
+# passes then spend the same stale quota snapshot. A test asserts the coupling.
+SWEEP_SAFETY_CEILING = 200
 
 
 async def _labels_for_keys(db, user_id: uuid.UUID, keys: tuple[str, ...]) -> list[tuple[str, str]]:
@@ -39,16 +60,18 @@ async def _labels_for_keys(db, user_id: uuid.UUID, keys: tuple[str, ...]) -> lis
     return [(c.key, c.gmail_label) for c in categories if c.key in keys and c.is_enabled]
 
 
-def effective_limit(budget: int | None, max_per_sweep: int = MAX_PER_SWEEP) -> int:
+def effective_limit(budget: int | None, max_per_sweep: int = SWEEP_SAFETY_CEILING) -> int:
     """How many drafts this pass may create.
 
-    `budget` is what the user's plan has left this month. Without it the sweep
-    would create a whole batch for someone with one draft of quota remaining.
+    `budget` is what the user's plan has left this month, and it is the bound
+    that normally applies — without it the sweep would happily run a whole
+    backlog for someone with one draft of quota remaining.
 
-    `max_per_sweep` defaults to this module's own cap. `follow_up.sweep_user`
-    reuses this function rather than duplicating the min/max logic, but its
-    per-sweep ceiling (5) is not this module's (10), so it passes its own
-    constant explicitly instead of relying on the default.
+    `max_per_sweep` defaults to this module's safety ceiling, which only takes
+    effect on a plan with unlimited drafts. `follow_up.sweep_user` reuses this
+    function rather than duplicating the min/max logic, but a nudge pass is not
+    a backlog drain and must not inherit that ceiling, so it passes its own much
+    smaller constant explicitly.
     """
     if budget is None:
         return max_per_sweep
