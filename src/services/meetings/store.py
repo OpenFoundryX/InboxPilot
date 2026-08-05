@@ -10,6 +10,7 @@ from models.meetings import (
     ACTIVE_STATUSES,
     SOURCE_CALENDAR,
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_PENDING,
     Meeting,
     MeetingSettings,
@@ -137,6 +138,36 @@ async def list_scheduled_upcoming(db: AsyncSession, user_id: uuid.UUID) -> list[
             Meeting.calendar_event_id.is_not(None),
             Meeting.starts_at.is_not(None),
             Meeting.starts_at > now,
+        )
+    )
+    return list(result)
+
+
+#: How long a reserved key may sit without bytes before we give up on it. Long
+#: enough that a slow 1 GB upload on a bad connection is never mistaken for an
+#: abandoned one, short enough that a user who closed the tab sees an honest
+#: failure rather than a row stuck on "Processing" indefinitely.
+ABANDONED_MEDIA_HOURS = 24
+
+
+async def list_abandoned_media(db: AsyncSession, *, now: datetime) -> list[Meeting]:
+    """Rows that reserved a key and never received the bytes.
+
+    A meeting whose upload was announced but never completed — the tab was
+    closed, the browser recording died mid-call, the network dropped. The row
+    and any partial object both need clearing.
+
+    Queried across all users rather than per-user: uploads have nothing to do
+    with auto-join, so scoping this to the users the bot sweep visits would
+    leave everyone else's abandoned rows to accumulate forever.
+    """
+    cutoff = now - timedelta(hours=ABANDONED_MEDIA_HOURS)
+    result = await db.scalars(
+        select(Meeting).where(
+            Meeting.media_key.is_not(None),
+            Meeting.media_confirmed_at.is_(None),
+            Meeting.created_at < cutoff,
+            Meeting.status.notin_((STATUS_FAILED, STATUS_CANCELLED)),
         )
     )
     return list(result)

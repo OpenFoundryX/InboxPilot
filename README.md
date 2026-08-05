@@ -62,6 +62,28 @@ Meetings are booked by the `meetings.sweep` beat job a few minutes ahead of each
 call, or on demand with `POST /v1/meetings/join` and a pasted link. Cost is
 usage-based, roughly $0.65 per recorded hour at the time of writing.
 
+### Capturing without a bot
+
+Not every meeting is a call a bot can join. Two other ways in, both ending at the
+same recap:
+
+| Path | Endpoints |
+|---|---|
+| Record in the browser | `POST /v1/meetings/live`, then `POST /v1/meetings/{id}/uploads/complete` |
+| Upload a file | `POST /v1/meetings/uploads`, then `POST /v1/meetings/{id}/uploads/complete` |
+
+Both reserve a row, hand back a presigned S3 URL, and wait to be told the object
+landed — which is verified against the bucket, not taken from the client. The
+bytes go browser-to-bucket and never through this API.
+
+`gpt-4o-transcribe` transcribes them (`services/meetings/transcribe.py`), because
+Recall only transcribes calls its own bots attended. That model returns no speaker
+labels, so summarization is told not to guess who committed to what. Duration is
+read from the media with `ffprobe` and meters against the same bot-hour cap.
+
+Setup beyond the bot: an S3 or R2 bucket (`S3_*`), with a CORS rule allowing PUT
+from the web origin. `ffmpeg` is already in the Docker image.
+
 ## Common commands
 
 ```bash

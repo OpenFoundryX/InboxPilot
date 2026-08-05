@@ -30,6 +30,12 @@ TASK_MODULES = [
     "workers.jobs.reminders_sweep",
     "workers.jobs.meetings_sweep",
     "workers.jobs.process_meeting",
+    "workers.jobs.transcribe_media",
+    # `retention.sweep` has been in the beat schedule since retention shipped
+    # but was never listed here, so no worker ever registered it and every
+    # nightly dispatch was rejected as an unknown task. Media and transcripts
+    # have therefore not actually been pruned.
+    "workers.jobs.retention_sweep",
     "agents.tasks",
 ]
 

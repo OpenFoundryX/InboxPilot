@@ -88,10 +88,27 @@ class Transcript:
     def is_empty(self) -> bool:
         return not any(s.text.strip() for s in self.segments)
 
+    @property
+    def is_diarized(self) -> bool:
+        """Whether anything in here names who was speaking.
+
+        False for transcripts from a model that doesn't separate speakers, which
+        is every transcript of media a bot never attended. Readers use it to
+        decide how much to trust attribution.
+        """
+        return any(s.speaker for s in self.segments)
+
     def render(self, max_chars: int | None = None) -> str:
-        """Flatten to `Speaker: text` lines, oldest first."""
+        """Flatten to `Speaker: text` lines, oldest first.
+
+        A transcript with no speakers anywhere renders as bare text instead.
+        Prefixing every line with `Unknown:` would add nothing a reader can use
+        and quietly spend a fifth of the summarizer's character budget saying
+        the same word several hundred times.
+        """
+        diarized = self.is_diarized
         lines = [
-            f"{s.speaker or 'Unknown'}: {s.text.strip()}"
+            f"{s.speaker or 'Unknown'}: {s.text.strip()}" if diarized else s.text.strip()
             for s in self.segments
             if s.text.strip()
         ]

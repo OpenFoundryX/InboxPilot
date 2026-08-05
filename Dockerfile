@@ -14,6 +14,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ffmpeg/ffprobe: transcoding uploaded media down to speech-sized audio before
+# transcription, and reading its true duration for metering. The worker needs
+# them; they are in the shared base stage because the API image is built from
+# the same target. Without this layer the transcode works on a developer's Mac
+# (Homebrew) and fails only in the container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies (the project itself is virtual — package = false).
 COPY pyproject.toml ./
 COPY uv.lock* ./

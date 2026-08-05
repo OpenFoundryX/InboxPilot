@@ -45,6 +45,18 @@ Rules:
 - Resolve relative dates ("next Tuesday", "end of week") against the meeting time given to you.
 - Speaker labels come from imperfect diarization; if attribution is ambiguous, use null rather than guessing."""
 
+# Appended when the transcript carries no speaker labels at all — an upload or a
+# browser recording, transcribed by a model that doesn't diarize. Without this
+# the model reaches for the attendee list to fill in owners, and a recap that
+# confidently assigns work to the wrong person is worse than one that assigns
+# none. Naming a spoken name as the only admissible evidence leaves the genuine
+# case ("Priya, can you send that?") working.
+_UNLABELLED = """
+
+This transcript has NO speaker labels — you cannot tell who is speaking.
+Set every action item's "owner" to null unless someone is named out loud in the
+text itself. Never infer an owner from the invited-attendee list."""
+
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
@@ -66,8 +78,14 @@ def summarize(
     title: str | None = None,
     started_at: datetime | None = None,
     attendees: list[str] | None = None,
+    speakers_labelled: bool = True,
 ) -> dict[str, Any] | None:
-    """Return `{summary, decisions, action_items}`, or None if extraction failed."""
+    """Return `{summary, decisions, action_items}`, or None if extraction failed.
+
+    `speakers_labelled` is False for transcripts with no diarization — uploads
+    and browser recordings. It tightens the owner rule rather than changing the
+    output shape.
+    """
     if not settings.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
     if not transcript.strip():
@@ -86,7 +104,10 @@ def summarize(
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": _SYS},
+                {
+                    "role": "system",
+                    "content": _SYS if speakers_labelled else _SYS + _UNLABELLED,
+                },
                 {"role": "user", "content": content},
             ],
         )

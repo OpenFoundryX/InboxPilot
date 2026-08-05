@@ -1,43 +1,35 @@
-"""Turn a finished recording into a recap: transcript, summary, reminders, email.
+"""Turn a bot's finished recording into a recap.
 
-Enqueued by the provider webhook when a bot reports `done`. Every step persists
-before the next begins, so a failure part-way through is recoverable by simply
-running the task again — the transcript download is the expensive part and it
-only happens once.
+Enqueued by the provider webhook when a bot reports `done`. This job owns the
+bot-specific half — fetching the vendor's transcript and metering the call —
+and hands off to `services.meetings.pipeline.finalize` for everything from the
+transcript onward, which it shares with transcribed uploads.
+
+Every step persists before the next begins, so a failure part-way through is
+recoverable by simply running the task again — the transcript download is the
+expensive part and it only happens once.
 """
 
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from core.plans import get_plan
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
-from models.meetings import (
-    STATUS_DELIVERED,
-    STATUS_PROCESSED,
-    Meeting,
-)
-from models.reminders import ORIGIN_MEETING, Reminder
-from models.users import User
+from models.meetings import STATUS_PROCESSED, Meeting
 from services.billing.access import effective_plan_id
 from services.billing.store import get_subscription
 from services.billing.usage import add_bot_seconds
-from services.meetings.recap import compose_recap
+from services.meetings.pipeline import finalize
 from services.meetings.recording import resolve_recording_url
-from services.meetings.store import get_or_create_settings
-from services.meetings.summarize import summarize
-from services.notify import send_to_inbox
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
 
 RETRY_DELAY_SECONDS = 300
-# Same lead as extracted email deadlines, so reminders behave consistently
-# however they were discovered.
-REMINDER_LEAD_HOURS = 24
 
 
 @celery_app.task(name="meetings.process", bind=True, max_retries=3)
@@ -131,89 +123,6 @@ async def _process(db, meeting_id: str) -> dict:
         log.info("meetings.empty_transcript", meeting_id=meeting_id)
         return {"skipped": "empty transcript"}
 
-    extracted = summarize(
-        meeting.transcript,
-        title=meeting.title,
-        started_at=meeting.starts_at,
-        attendees=meeting.attendees,
-    )
-    if not extracted:
-        # The transcript is saved, so re-running costs one LLM call.
-        meeting.status_detail = "summarization failed"
-        log.warning("meetings.summarize_empty", meeting_id=meeting_id)
-        return {"skipped": "summarization failed"}
-
-    meeting.summary = extracted["summary"]
-    meeting.decisions = extracted["decisions"]
-    meeting.action_items = extracted["action_items"]
-    meeting.status = STATUS_PROCESSED
-    meeting.status_detail = None
-    await db.flush()
-
-    settings_row = await get_or_create_settings(db, meeting.user_id)
-    reminders = 0
-    if settings_row.create_reminders:
-        reminders = _create_reminders(db, meeting)
-
-    user = await db.get(User, meeting.user_id)
-    sent = False
-    if settings_row.email_recap and user and user.email:
-        subject, body = compose_recap(meeting)
-        try:
-            send_to_inbox(str(meeting.user_id), user.email, subject, body)
-            meeting.recap_sent_at = datetime.now(timezone.utc)
-            meeting.status = STATUS_DELIVERED
-            sent = True
-        except Exception:
-            # Summary is already persisted and readable via the API; a failed
-            # send shouldn't lose the work or block reminders.
-            log.exception("meetings.recap_send_failed", meeting_id=meeting_id)
-
-    log.info(
-        "meetings.processed",
-        meeting_id=meeting_id,
-        action_items=len(meeting.action_items),
-        reminders=reminders,
-        recap_sent=sent,
-    )
-    return {"processed": True, "reminders": reminders, "recap_sent": sent}
-
-
-def _create_reminders(db, meeting: Meeting) -> int:
-    """One reminder per action item that came with a date.
-
-    Undated commitments are deliberately skipped — a reminder needs a time, and
-    inventing one turns a useful nudge into noise.
-    """
-    now = datetime.now(timezone.utc)
-    created = 0
-    for item in meeting.action_items or []:
-        due = _parse_due(item.get("due_at"))
-        if not due:
-            continue
-        remind_at = max(due - timedelta(hours=REMINDER_LEAD_HOURS), now)
-        owner = f" ({item['owner']})" if item.get("owner") else ""
-        db.add(
-            Reminder(
-                user_id=meeting.user_id,
-                remind_at=remind_at,
-                title=str(item["what"])[:300],
-                note=(
-                    f"From meeting: {meeting.title or 'untitled'}{owner}\n"
-                    f"Due {due.isoformat()}"
-                ),
-                origin=ORIGIN_MEETING,
-            )
-        )
-        created += 1
-    return created
-
-
-def _parse_due(value) -> datetime | None:
-    if not value:
-        return None
-    try:
-        due = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due
+    # The vendor diarizes, so the summarizer can trust speaker attribution here
+    # in a way it cannot for our own transcripts.
+    return await finalize(db, meeting, speakers_labelled=True)
