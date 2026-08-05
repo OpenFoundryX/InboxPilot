@@ -31,8 +31,16 @@ from workers.celery_app import celery_app
 
 log = get_logger(__name__)
 
-# How long after a catch-up pass before a user is due for another.
-SWEEP_INTERVAL_MINUTES = 15
+# How long after a pass before a user is due for another.
+#
+# This is the drafting cadence, not a catch-up interval any more: nothing
+# chains off classification, so a message gets its draft on the next pass and
+# not before. Two hours batches a morning's mail into one set of drafts rather
+# than trickling them in one at a time as it lands — the same argument the
+# product already makes for batching delivery. `sweep.LOOKBACK_DAYS` is what
+# keeps the gap covered: a pass looks back far further than the gap between
+# passes, so nothing arriving between two of them is missed.
+SWEEP_INTERVAL_MINUTES = 120
 # Follow-ups are daily. Anything more often would nudge the same person twice
 # about the same silence.
 FOLLOW_UP_INTERVAL_HOURS = 24

@@ -1,14 +1,15 @@
-"""Catch-up pass: draft for mail in the chosen categories that has no draft yet.
+"""The scheduled draft pass: reply drafts for mail in the chosen categories.
 
-The arrival job handles mail as it lands, so this exists for the gaps — drafting
-switched on after the mail arrived, a category added later, a worker that was
-down, an LLM call that failed all its retries.
+This is the only thing that writes reply drafts. Classification used to chain a
+per-message draft as mail landed, with this pass covering the gaps; that produced
+drafts one at a time all day and needed two code paths to keep honest. Now every
+draft comes from here, on `drafts_sweep.SWEEP_INTERVAL_MINUTES`, so a batch of
+mail turns into a batch of drafts.
 
 A pass clears the whole window it can see rather than trickling a fixed batch
 per tick. The previous caps (25 candidates per category, 10 drafts per pass)
-meant a real backlog drained over successive 15-minute ticks, so mail from two
-days ago could still be waiting for its draft hours after drafting was switched
-on — which defeats the point of a catch-up pass. What bounds a pass now is the
+meant a real backlog drained over successive ticks, so mail from two days ago
+could still be waiting for its draft hours after drafting was switched on. What bounds a pass now is the
 user's remaining monthly quota, with `SWEEP_SAFETY_CEILING` behind it for plans
 that have no quota to bind instead.
 
@@ -30,10 +31,13 @@ from services.drafts.create import draft_reply
 
 log = get_logger(__name__)
 
-# How far back a catch-up pass looks. Long enough to cover a worker outage or a
-# setting flipped on this morning, short enough that enabling drafts does not
-# retroactively fill the mailbox with replies to week-old mail. This window is
-# the real bound on how much work a pass can find.
+# How far back a pass looks. It must comfortably exceed
+# `drafts_sweep.SWEEP_INTERVAL_MINUTES`, or mail arriving just after one pass
+# and ageing out before the next is never drafted at all — a gap the old
+# per-message arrival path used to hide. Beyond that: long enough to cover a
+# worker outage or a setting flipped on this morning, short enough that enabling
+# drafts does not retroactively fill the mailbox with replies to week-old mail.
+# This window is the real bound on how much work a pass can find.
 LOOKBACK_DAYS = 2
 
 # Candidates pulled per category. `None` makes `gmail.fetch_by_query` page until
@@ -70,8 +74,8 @@ def candidate_query(gmail_label: str) -> str:
     not here. Cheap filter first, judgement second.
 
     `-label:DRAFTED_LABEL` is what makes the pass idempotent. Nothing about
-    drafts is stored, so without this exclusion every sweep would re-draft the
-    same mail — a fresh reply to the same email every 15 minutes.
+    drafts is stored, so without this exclusion every pass would re-draft the
+    same mail — a fresh reply to the same email every couple of hours.
     """
     return (
         f'label:"{gmail_label}" newer_than:{LOOKBACK_DAYS}d to:me '

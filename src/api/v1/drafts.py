@@ -6,7 +6,7 @@ that steer or inform drafting.
 
 Two things this API deliberately does not offer. There is no "draft this message
 now" endpoint — drafting is driven entirely by mail arriving and by the periodic
-sweeps (`workers.jobs.reply_draft_job`, `workers.jobs.drafts_sweep`). And there is
+sweeps (`workers.jobs.drafts_sweep`). And there is
 no draft history, because no draft is ever stored; the drafts live only in the
 user's Gmail.
 """
@@ -84,6 +84,7 @@ async def update_settings(
 
     for field, value in data.items():
         setattr(row, field, value)
+
     return row
 
 
@@ -94,6 +95,7 @@ async def list_files(
     purpose: Annotated[str | None, Query()] = None,
 ) -> list[DraftFile]:
     """Uploaded files, newest first. Filter by `instruction` or `knowledge`."""
+
     if purpose is not None and purpose not in FILE_PURPOSES:
         raise HTTPException(422, f"purpose must be one of {sorted(FILE_PURPOSES)}")
     return await store.list_files(db, user.id, purpose)

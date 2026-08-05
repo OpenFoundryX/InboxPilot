@@ -1,23 +1,25 @@
 """Create one draft, end to end. The single path both callers use.
 
-The arrival job (mail landing now), the catch-up sweep, and the follow-up sweep
-all come through here, the same way `services.classify.apply` is shared by the
-webhook task and the onboarding backfill.
+Both producers come through here — the scheduled draft pass and the follow-up
+sweep — the same way `services.classify.apply` is shared by the webhook task and
+the onboarding backfill. There used to be a third, chained off classification so
+a draft appeared the moment mail landed; drafting is scheduled now, so nothing
+writes a draft outside a pass.
 
 This is also the single choke point for billing on drafts: the entitlement gate
 (`_entitled_for_draft`) and the usage meter (`_meter_draft`) both live here,
-in `_create_and_mark`, rather than in any of the three callers. Gating at the
-call sites would need three copies kept in sync, and the arrival job
-(`workers.jobs.reply_draft_job`) had none at all until this was centralized —
-a locked or never-subscribed account generated AI drafts forever, and every
-arrival draft went uncounted against the monthly cap. `services/commands/
+in `_create_and_mark`, rather than in the callers. Gating at the call sites
+would need a copy per caller kept in sync, and the arrival path that used to
+exist had none at all until this was centralized — a locked or never-subscribed
+account generated AI drafts forever, and every arrival draft went uncounted
+against the monthly cap. `services/commands/
 handlers.py:149` gates `_now` routine actions the same way, for the same
 reason: one place a future caller can't bypass.
 
 Nothing about the draft is stored. The only trace is `gmail.DRAFTED_LABEL` on the
 source message, and that marker is load-bearing: the sweeps exclude it, so it is
-the sole reason a 15-minute catch-up pass does not re-draft the same email every
-time it runs. It is applied immediately after the draft is created, and a failure
+the sole reason a scheduled pass does not re-draft the same email every time it
+runs. It is applied immediately after the draft is created, and a failure
 to apply it is escalated rather than swallowed — an unmarked draft would be
 recreated on the next pass.
 """
@@ -46,9 +48,9 @@ def _entitled_for_draft(user_id: str) -> bool:
     live at the moment of creation.
 
     This is the single gate every draft-producing caller passes through
-    (`reply_draft` off the arrival webhook, `drafts.sweep`'s catch-up pass,
-    `drafts.follow_up`'s nudges) — a locked account or one that has exhausted
-    its monthly cap stops here regardless of which of the three called in.
+    (`drafts.sweep`'s scheduled pass and `drafts.follow_up`'s nudges) — a locked
+    account, or one that has exhausted its monthly cap, stops here regardless
+    of which called in.
     Checked *before* `generate_reply`/`generate_follow_up` so a denied draft
     never spends the LLM call it would otherwise need.
 
@@ -76,11 +78,11 @@ def _meter_draft(user_id: str) -> None:
 
     Best-effort, like `record_draft_created` just above: the Gmail draft and
     its `DRAFTED_LABEL` marker are already committed by this point, so a
-    raised exception here would only make the arrival job's autoretry
-    (`workers.jobs.reply_draft_job`) run `draft_reply` again for the same
-    message — which the marker does not protect against on the arrival path —
-    spending a second LLM call and creating a second draft. Losing a count on
-    a rare failure is the far smaller error.
+    raised exception here would only make the caller's autoretry run
+    `draft_reply` again for the same message, spending a second LLM call and
+    creating a second draft. Losing a count on a rare failure is the far
+    smaller error. (This was sharper when a per-message arrival task retried
+    on any exception; the sweep re-queries and finds the marker instead.)
     """
     uid = uuid.UUID(user_id)
     now = datetime.now(timezone.utc)
@@ -215,7 +217,7 @@ def draft_reply(
     if not draft.should_draft:
         log.info("drafts.declined", user_id=user_id, message_id=message_id, reason=draft.reason)
         # Marked even though nothing was drafted. The decision is deterministic
-        # enough that re-asking every 15 minutes would just spend the same tokens
+        # enough that re-asking on every pass would just spend the same tokens
         # to decline again — and on the strictest selectivity setting, declining
         # is the common case.
         _mark_drafted(user_id, message_id)

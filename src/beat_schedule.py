@@ -32,10 +32,10 @@ beat_schedule: dict = {
         "task": "meetings.sweep",
         "schedule": 60.0,
     },
-    # Catch-up drafting for mail the arrival job missed. Every 5 minutes rather
-    # than every minute: the task itself only acts on users whose own 15-minute
-    # window is up, and each pass costs Gmail queries plus LLM calls, so a
-    # tighter beat would just be idle wake-ups.
+    # Scheduled drafting. The beat decides nothing — the task acts only on
+    # users whose own `SWEEP_INTERVAL_MINUTES` window is up — so this only needs
+    # to tick often enough that a due user is picked up promptly. Every 5
+    # minutes gives at most that much lateness against a 2-hour cadence.
     "drafts-sweep": {
         "task": "drafts.sweep",
         "schedule": 300.0,

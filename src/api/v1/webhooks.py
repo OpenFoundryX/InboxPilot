@@ -123,17 +123,10 @@ async def composio_webhook(request: Request) -> dict[str, str]:
         subject=data.get("subject"),
         snippet=_snippet(data),
         thread_id=data.get("thread_id"),
-        # Recipients, so drafting can tell mail addressed to the user from mail
-        # they were merely copied on. Frequently absent from the trigger
-        # payload, and absent must stay None — an empty string would read as
-        # "addressed to nobody" rather than "unknown".
-        to=data.get("to"),
-        cc=data.get("cc"),
-        # Passed through for auto-drafting, which chains off classification. The
-        # classifier keeps using the truncated preview above; a draft has to see
-        # the whole message, and carrying it here is what saves the draft job a
-        # round trip back to Gmail for a body we already hold.
-        body=data.get("message_text"),
+        # No body and no recipients. Both were carried for auto-drafting, which
+        # used to chain off this task; drafting is scheduled now and reads what
+        # it needs from Gmail itself. Classification only ever wanted the
+        # truncated preview above.
     )
 
     log.info("composio.webhook_classify", user_id=user_id, message_id=message_id)
