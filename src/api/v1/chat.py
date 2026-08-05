@@ -34,6 +34,7 @@ from models.chat import (
 from models.users import User
 from schemas.chat import (
     AskRequest,
+    CommandRead,
     ConfirmRequest,
     ConversationDetail,
     ConversationRead,
@@ -43,6 +44,7 @@ from services.auth.dependencies import get_current_user
 from services.billing.dependencies import EntitledUser
 from services.chat import engine, store
 from services.chat.sources.email_source import EmailRetriever
+from services.commands import registry
 from services.commands.handlers import execute as execute_action
 from services.mailman.store import get_or_create_settings
 
@@ -75,11 +77,25 @@ async def list_conversations(user: CurrentUser, db: DbSession):
     return await store.list_conversations(db, user.id)
 
 
+@router.get("/commands", response_model=list[CommandRead])
+async def list_commands(user: CurrentUser):
+    """The slash command surface, for the web autocomplete menu.
+
+    `CurrentUser` rather than `EntitledUser`: this is a read, and it matches
+    how `/conversations*` stay open to a locked account. Knowing what the
+    commands are is not the thing worth gating — running them is, and
+    `services.commands.handlers.execute` already gates that individually.
+    """
+    return [CommandRead(name=c.name, summary=c.summary, usage=c.usage) for c in registry.COMMANDS]
+
+
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(conversation_id: uuid.UUID, user: CurrentUser, db: DbSession):
     conv = await store.get_conversation(db, user.id, conversation_id)
+
     if conv is None:
         raise NotFoundError("Conversation not found")
+
     messages = await store.list_messages(db, conv.id)
     return ConversationDetail(
         id=conv.id,
@@ -197,6 +213,7 @@ def _friendly_error(exc: Exception) -> str:
     text = str(exc)
     if "OPENAI_API_KEY" in text:
         return "Chat isn't configured yet — the server is missing an OpenAI API key."
+
     return "Something went wrong while answering. Please try again."
 
 

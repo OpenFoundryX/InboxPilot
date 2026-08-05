@@ -55,3 +55,16 @@ class AskRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     approve: bool
+
+
+class CommandRead(BaseModel):
+    """One slash command, as the web autocomplete menu needs it.
+
+    Served rather than duplicated in TypeScript: an eleven-row list with
+    descriptions kept in two repos drifts, and the menu is the only place
+    users discover these.
+    """
+
+    name: str
+    summary: str
+    usage: str
