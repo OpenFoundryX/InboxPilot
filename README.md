@@ -81,8 +81,34 @@ Recall only transcribes calls its own bots attended. That model returns no speak
 labels, so summarization is told not to guess who committed to what. Duration is
 read from the media with `ffprobe` and meters against the same bot-hour cap.
 
-Setup beyond the bot: an S3 or R2 bucket (`S3_*`), with a CORS rule allowing PUT
-from the web origin. `ffmpeg` is already in the Docker image.
+#### Media storage
+
+`make up` runs MinIO and creates the bucket, so local development needs no cloud
+account. The console is at http://localhost:9003 (credentials from `S3_*` in
+`.env`, default `inboxos` / `inboxos-secret`).
+
+The API port is published on **9002**, not MinIO's usual 9000, which is often
+already taken by another project's MinIO. Override with `MINIO_API_PORT` and
+`MINIO_CONSOLE_PORT` if that clashes too.
+
+Two endpoint settings rather than one, because the browser and the API reach the
+bucket at different addresses:
+
+| Setting | Who uses it | Local value |
+|---|---|---|
+| `S3_ENDPOINT_URL` | API and worker, from inside the compose network | `http://minio:9000` |
+| `S3_PUBLIC_ENDPOINT_URL` | The browser, following a presigned URL | `http://localhost:9002` |
+
+A presigned URL's signature covers the host, so one signed for `minio:9000` is
+rejected with `SignatureDoesNotMatch` the moment a browser opens it. Leave
+`S3_PUBLIC_ENDPOINT_URL` blank for AWS and R2, where both sides use the same
+public host.
+
+For a real bucket: set `S3_*` to it, blank `S3_ENDPOINT_URL` for AWS or the
+account endpoint for R2, and add a CORS rule allowing `PUT` and `GET` from the web
+origin. A missing CORS rule fails in the browser with no server-side trace, so
+it's the first thing to check if an upload dies at 0%. `ffmpeg` is already in the
+Docker image.
 
 ## Common commands
 

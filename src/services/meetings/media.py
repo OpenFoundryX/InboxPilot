@@ -111,7 +111,7 @@ async def reserve(
     size_bytes: int,
     filename: str | None = None,
 ):
-    """Claim a key for `meeting` and hand back permission to upload to it.
+    """Claim a key for a file we already have, and permission to upload it.
 
     The row is written before the URL is returned, so an upload that starts is
     always attributable to a meeting — the alternative leaves objects in the
@@ -125,7 +125,35 @@ async def reserve(
         get_storage().presign_put,
         key,
         content_type=normalized,
-        max_bytes=size_bytes,
+        exact_bytes=size_bytes,
+    )
+    meeting.media_key = key
+    await db.flush()
+    return presigned
+
+
+async def reserve_for_live(db: AsyncSession, meeting: Meeting):
+    """Claim a key for a recording that hasn't been made yet.
+
+    Two things differ from an ordinary upload, both because the file does not
+    exist when this is called:
+
+    The size cannot be signed. Nothing is known about a recording in progress,
+    so the ceiling is enforced when the upload is confirmed instead — the
+    object exists by then, and an oversized one is rejected and swept.
+
+    The link has to outlive the meeting. It is signed when recording starts and
+    used when it stops, so the ordinary hour would strand anyone whose call ran
+    long, at the one moment where failing loses the recording entirely.
+    """
+    key = build_key(
+        meeting.user_id, meeting.id, content_type=LIVE_CONTENT_TYPE, filename=None
+    )
+    presigned = await run_in_threadpool(
+        get_storage().presign_put,
+        key,
+        content_type=LIVE_CONTENT_TYPE,
+        ttl_seconds=settings.MEDIA_LIVE_URL_TTL_SECONDS,
     )
     meeting.media_key = key
     await db.flush()

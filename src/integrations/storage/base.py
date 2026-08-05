@@ -27,9 +27,7 @@ class PresignedUpload:
     """Permission for a browser to PUT one object, directly.
 
     The bytes never pass through the API: a 1 GB body would pin a worker for
-    minutes and pay egress twice. `max_bytes` is baked into the signature, so a
-    client that declares one size and sends another is refused by the bucket
-    rather than trusted by us.
+    minutes and pay egress twice.
     """
 
     url: str
@@ -54,9 +52,27 @@ class MediaStorage(Protocol):
     """Everything InboxPilot needs from an object store."""
 
     def presign_put(
-        self, key: str, *, content_type: str, max_bytes: int
+        self,
+        key: str,
+        *,
+        content_type: str,
+        exact_bytes: int | None = None,
+        ttl_seconds: int | None = None,
     ) -> PresignedUpload:
-        """A URL the browser can PUT one object to, and nothing else."""
+        """A URL the browser can PUT one object to, and nothing else.
+
+        `exact_bytes` pins the size into the signature, so a client that
+        declares one size and sends another is refused by the bucket rather
+        than trusted by us. It is only available when the size is known in
+        advance — an upload of a file that already exists. A recording still
+        being made has no size yet, and passing None leaves the length
+        unsigned; the size is then checked when the upload is confirmed, which
+        catches an oversized object after the fact rather than before.
+
+        `ttl_seconds` overrides the configured lifetime. A live recording needs
+        a URL that outlives the meeting, since it is signed when recording
+        starts and used when it stops.
+        """
 
     def presign_get(self, key: str) -> tuple[str, datetime]:
         """A playable link and its deadline.

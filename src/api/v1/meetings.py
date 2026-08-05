@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
-from core.config import settings
 from core.logging import get_logger
 from integrations.composio import calendar
 from integrations.meetingbot import get_provider
@@ -44,10 +43,10 @@ from services.auth.dependencies import get_current_user
 from services.billing.entitlements import FEATURE_MEETING_BOT, REASON_LOCKED, check
 from services.meetings.links import find_meeting_link, link_from_event
 from services.meetings.media import (
-    LIVE_CONTENT_TYPE,
     MediaRejected,
     confirm,
     reserve,
+    reserve_for_live,
 )
 from services.meetings.recording import resolve_recording_url
 from services.meetings.store import get_or_create_settings, upsert_from_event
@@ -284,14 +283,7 @@ async def start_live_recording(
     await db.flush()
 
     try:
-        presigned = await reserve(
-            db,
-            meeting,
-            content_type=LIVE_CONTENT_TYPE,
-            # Nothing is known about a recording that hasn't happened yet, so
-            # the signature is bounded by the plan limit rather than by a size.
-            size_bytes=settings.MEDIA_UPLOAD_MAX_BYTES,
-        )
+        presigned = await reserve_for_live(db, meeting)
     except StorageError as exc:
         log.exception("meetings.presign_failed", user_id=str(user.id))
         raise HTTPException(

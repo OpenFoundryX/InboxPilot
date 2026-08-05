@@ -1,10 +1,14 @@
 """S3-compatible implementation of the media-storage boundary.
 
-Covers AWS S3 and Cloudflare R2 without branching: they speak the same API, and
-the only difference is whether `S3_ENDPOINT_URL` is set. Everything
-bucket-shaped stops here — botocore's exception taxonomy, presigning, and the
-404-vs-403 distinction on a missing object are all translated into the neutral
-types in `base.py`.
+Covers AWS S3, Cloudflare R2, and MinIO without branching on the vendor: they
+speak the same API, and what differs is only the endpoint and how a bucket is
+addressed within it. Everything bucket-shaped stops here — botocore's exception
+taxonomy, presigning, and the 404-vs-403 distinction on a missing object are all
+translated into the neutral types in `base.py`.
+
+Self-hosted endpoints bring two wrinkles AWS does not have, both handled below:
+buckets have to be addressed as a path rather than a subdomain, and the address
+the browser uses may not be the one this process uses.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -26,43 +30,82 @@ log = get_logger(__name__)
 _MISSING = {"404", "NoSuchKey", "403", "AccessDenied"}
 
 
-@lru_cache(maxsize=1)
-def _client():
+def _build(endpoint: str | None):
     if not settings.S3_BUCKET:
         raise StorageError("S3_BUCKET is not configured")
     if not (settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY):
         raise StorageError("S3 credentials are not configured")
     return boto3.client(
         "s3",
-        endpoint_url=settings.S3_ENDPOINT_URL or None,
+        endpoint_url=endpoint or None,
         region_name=settings.S3_REGION or None,
         aws_access_key_id=settings.S3_ACCESS_KEY_ID,
         aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
-        # SigV4 is what R2 requires and what presigned PUTs need in every
-        # region created since 2014. Left to default, botocore may pick SigV2
-        # and the signature is rejected.
-        config=Config(signature_version="s3v4"),
+        config=Config(
+            # SigV4 is what R2 requires and what presigned PUTs need in every
+            # region created since 2014. Left to default, botocore may pick
+            # SigV2 and the signature is rejected.
+            signature_version="s3v4",
+            # Virtual-host addressing turns a bucket into a subdomain, which
+            # only works when the endpoint is a real domain with wildcard DNS.
+            # Against a self-hosted endpoint it produces `bucket.minio:9000`
+            # and fails to resolve, so anything with a custom endpoint gets
+            # path style. AWS keeps the default.
+            s3={"addressing_style": "path"} if endpoint else {},
+        ),
     )
+
+
+@lru_cache(maxsize=1)
+def _client():
+    """For calls this process makes itself — head, delete."""
+    return _build(settings.S3_ENDPOINT_URL)
+
+
+@lru_cache(maxsize=1)
+def _presign_client():
+    """For URLs handed to a browser.
+
+    Separate from `_client` only when the bucket answers on a different address
+    from outside — MinIO in Docker being the case that needs it. The signature
+    covers the host, so signing with the internal endpoint would hand out URLs
+    that fail with SignatureDoesNotMatch the moment a browser opens them, and
+    signing everything with the public one would break head/delete from inside
+    the network. Two clients, each correct for its side.
+    """
+    public = settings.S3_PUBLIC_ENDPOINT_URL.strip()
+    if not public or public == settings.S3_ENDPOINT_URL.strip():
+        return _client()
+    return _build(public)
 
 
 class S3Storage:
     def presign_put(
-        self, key: str, *, content_type: str, max_bytes: int
+        self,
+        key: str,
+        *,
+        content_type: str,
+        exact_bytes: int | None = None,
+        ttl_seconds: int | None = None,
     ) -> PresignedUpload:
-        ttl = settings.MEDIA_URL_TTL_SECONDS
+        ttl = ttl_seconds or settings.MEDIA_URL_TTL_SECONDS
+        params: dict = {
+            "Bucket": settings.S3_BUCKET,
+            "Key": key,
+            "ContentType": content_type,
+        }
+        if exact_bytes is not None:
+            # Signed, so the browser must send a matching Content-Length. A
+            # client that declares 10 MB and streams 10 GB is refused by the
+            # bucket, not discovered by us afterwards from a storage bill.
+            # Omitted when the size genuinely isn't known yet: signing a bound
+            # the browser cannot meet would reject every legitimate upload,
+            # which is a worse failure than checking the size on confirmation.
+            params["ContentLength"] = exact_bytes
         try:
-            url = _client().generate_presigned_url(
+            url = _presign_client().generate_presigned_url(
                 "put_object",
-                Params={
-                    "Bucket": settings.S3_BUCKET,
-                    "Key": key,
-                    "ContentType": content_type,
-                    # Signed, so the browser must send a matching
-                    # Content-Length. A client that declares 10 MB and streams
-                    # 10 GB is refused by the bucket, not discovered by us
-                    # afterwards from a storage bill.
-                    "ContentLength": max_bytes,
-                },
+                Params=params,
                 ExpiresIn=ttl,
             )
         except (BotoCoreError, ClientError) as exc:
@@ -78,7 +121,7 @@ class S3Storage:
     def presign_get(self, key: str) -> tuple[str, datetime]:
         ttl = settings.MEDIA_URL_TTL_SECONDS
         try:
-            url = _client().generate_presigned_url(
+            url = _presign_client().generate_presigned_url(
                 "get_object",
                 Params={"Bucket": settings.S3_BUCKET, "Key": key},
                 ExpiresIn=ttl,

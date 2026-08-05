@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # endpoint, AWS leaves it blank.
     MEDIA_STORAGE_PROVIDER: str = "s3"
     S3_ENDPOINT_URL: str = ""
+    # Where the *browser* reaches the bucket, when that differs from where the
+    # API reaches it. A presigned URL's signature covers the host, so one signed
+    # for an internal address is rejected when opened from anywhere else.
+    # Needed for MinIO in Docker (`minio:9000` inside, `localhost:9000` out);
+    # blank for AWS and R2, where both sides use the same public host.
+    S3_PUBLIC_ENDPOINT_URL: str = ""
     S3_REGION: str = "auto"
     S3_BUCKET: str = ""
     S3_ACCESS_KEY_ID: str = ""
@@ -87,6 +93,11 @@ class Settings(BaseSettings):
     # Long enough to upload a 1 GB file on a slow connection; the playback links
     # signed with the same TTL are re-resolved per page view anyway.
     MEDIA_URL_TTL_SECONDS: int = 3600
+    # A live recording's upload link is signed when recording starts and used
+    # when it stops, so it has to outlive the meeting. An hour would strand
+    # anyone whose call ran long, at the one moment where failing loses the
+    # recording outright.
+    MEDIA_LIVE_URL_TTL_SECONDS: int = 6 * 3600
 
     # Transcription for media Recall never saw. Its bots transcribe their own
     # calls; an uploaded file or a browser recording has to be transcribed here.
