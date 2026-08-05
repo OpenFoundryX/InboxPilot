@@ -58,6 +58,11 @@ services:
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
+      # Operator scripts, run with `docker compose exec api python scripts/...`.
+      # Mounted rather than baked in so editing one doesn't need a rebuild, and
+      # only here: they are one-off diagnostics, not something worker or beat
+      # ever executes.
+      - ./scripts:/app/scripts
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
