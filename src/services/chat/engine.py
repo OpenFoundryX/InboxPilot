@@ -37,7 +37,7 @@ from services.chat.intent import (
 )
 from services.chat.sources.base import Excerpt, Retriever
 from services.commands import slash
-from services.commands.ask import ANSWER_RULES
+from services.commands.ask import GROUNDING_RULES
 from services.commands.parser import parse_command
 from services.commands.registry import help_text
 from services.persona import CAPABILITIES
@@ -84,11 +84,31 @@ def _nudge(command: str, message: str) -> str:
     prefill = f"/{command} {' '.join(message.split())[:_NUDGE_MESSAGE_CAP]}".rstrip()
     return NUDGE_TEMPLATE.format(prefill=prefill)
 
-_CHAT_ANSWER_SYS = ANSWER_RULES + (
-    "\n\nThis is a live chat, not an email: do NOT sign off, and do not repeat the "
-    "user's question back to them. The sources are also listed separately beneath "
-    "your answer, so keep inline links to the ones you actually reference."
-)
+
+# Chat renders a card per source underneath every answer — subject, sender, and a
+# link to open it in Gmail. Reusing the email surface's format rules here printed
+# each email twice, once as a linked bullet and again as a card directly below it,
+# and the bullets carried nested From/Sent to/cc'd trees on top. So chat answers
+# summarise and let the cards be the index.
+_CHAT_FORMAT_RULES = """This is a live chat, not an email. Beneath your answer the app
+already renders a card for every source email, showing its subject, its sender and a
+link to open it in Gmail. That list is the index — do not rebuild it.
+
+- Answer in prose. Do not produce a bulleted list of the emails you found, and never
+  write a Markdown link or a URL: the cards below already link every one of them.
+- Do name specifics where they answer the question — a subject, a date, a sender, an
+  amount, who was on it. Summarising is not the same as being vague, and "I found 4
+  emails" answers nothing.
+- Lead with the direct answer in one line, then the supporting detail. Use **bold**
+  sparingly for the fact they asked for.
+- Where several emails are alike, say how many and what separates them rather than
+  walking through each one.
+- Do NOT sign off, and do not repeat the user's question back to them.
+
+A short bulleted list is still fine when the answer itself is genuinely a list of
+points (steps, options, deadlines) rather than a restatement of the source emails."""
+
+CHAT_ANSWER_SYS = f"{GROUNDING_RULES}\n\n{_CHAT_FORMAT_RULES}"
 
 _CHAT_SMALLTALK_SYS = f"""You are InboxOS, the user's email assistant, replying in a live
 web chat. Be warm and brief — two or three sentences, light Markdown, no sign-off, no
@@ -159,7 +179,7 @@ async def stream_answer(
         context = "\n\n(No relevant emails were found in their inbox.)"
 
     stream = _stream_completion(
-        _CHAT_ANSWER_SYS, _replayed(history), f"Question: {message}{context}"
+        CHAT_ANSWER_SYS, _replayed(history), f"Question: {message}{context}"
     )
     async for delta in stream:
         yield delta
@@ -253,9 +273,10 @@ async def _command_events(
         # A strict slash rule means saying so. Falling through to an answer
         # would silently swallow a change the user explicitly asked for.
         log.info("chat.slash_no_actions", user_id=user_id, name=command.name)
-        yield EV_TOKEN, {
-            "text": f"I couldn't work out what to change from that. Try:\n\n`{command.usage}`"
-        }
+        yield (
+            EV_TOKEN,
+            {"text": f"I couldn't work out what to change from that. Try:\n\n`{command.usage}`"},
+        )
         return
 
     log.info("chat.actions_proposed", user_id=user_id, name=command.name, count=len(proposed))
