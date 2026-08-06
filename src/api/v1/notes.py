@@ -5,6 +5,7 @@ which is the point — see `models/notes.py` for why the server does no timezone
 work here.
 """
 
+import re
 from datetime import date
 from typing import Annotated
 
@@ -28,6 +29,20 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 #: actually showing, so anything beyond this is a bug or a scrape rather than a
 #: need — and an uncapped range lets one request read a user's entire history.
 MAX_RANGE_DAYS = 120
+
+#: Notes are rich text, so "empty" is not the same as "no characters". A cleared
+#: editor still serializes to something like `<p></p>` or `<p><br></p>`, and
+#: taking that at face value would store a row for every day anyone scrolled
+#: past — the exact accumulation deleting empty rows exists to prevent. The
+#: client already sends "" for an empty document; this is the guard that holds
+#: the invariant regardless of what any client decides to send.
+_TAGS = re.compile(r"<[^>]+>")
+_ENTITIES = re.compile(r"&(?:nbsp|#160|#xa0);", re.I)
+
+
+def _is_blank(body: str) -> bool:
+    """Whether a note has no actual content, once markup is discounted."""
+    return not _ENTITIES.sub(" ", _TAGS.sub("", body)).strip()
 
 
 @router.get("", response_model=list[DailyNoteRead])
@@ -77,7 +92,7 @@ async def save_note(
     """
     body = payload.body.strip()
 
-    if not body:
+    if _is_blank(body):
         await db.execute(
             delete(DailyNote).where(
                 DailyNote.user_id == user.id, DailyNote.note_date == note_date
