@@ -11,6 +11,7 @@ from api.v1 import (
     drafts,
     integrations,
     mailman,
+    notes,
     users,
     webhooks,
     meetings
@@ -27,5 +28,6 @@ api_router.include_router(drafts.router)
 api_router.include_router(chat.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(meetings.router)
+api_router.include_router(notes.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(billing.router)
