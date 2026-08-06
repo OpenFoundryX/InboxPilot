@@ -46,6 +46,13 @@ _BITRATE = "32k"
 #: so a chunk that transcodes slightly larger than predicted still fits.
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
+#: The model also refuses anything over 1400 seconds, and that limit binds long
+#: before the size one does: an hour of speech at the bitrate above is only
+#: ~14 MB, so a 47-minute meeting sails under 20 MB and is still rejected for
+#: being 2847 seconds long. Both ceilings have to be checked, not just the one
+#: that happens to be easier to see.
+_MAX_UPLOAD_SECONDS = 1200
+
 #: How long each piece is when a file has to be split. At the bitrate above this
 #: is roughly 3.5 MB — comfortably inside the ceiling, and short enough that one
 #: failed chunk is cheap to retry.
@@ -167,8 +174,16 @@ def _duration_seconds(audio: Path) -> float:
 
 
 def _transcribe_file(audio: Path, workdir: Path, duration: float) -> list[TranscriptSegment]:
-    """Transcribe, splitting into chunks only when the file is too large."""
-    if audio.stat().st_size <= _MAX_UPLOAD_BYTES:
+    """Transcribe, splitting into chunks when either API ceiling is in reach.
+
+    An unknown duration counts as too long. Splitting is a stream copy and a
+    file shorter than one chunk comes back as a single piece, so guessing
+    "split" costs almost nothing — while guessing "don't" on a file that turns
+    out to be an hour long costs the whole transcription.
+    """
+    within_size = audio.stat().st_size <= _MAX_UPLOAD_BYTES
+    within_duration = 0 < duration <= _MAX_UPLOAD_SECONDS
+    if within_size and within_duration:
         text = _transcribe_one(audio)
         return [TranscriptSegment(speaker=None, text=text, start=0.0)] if text else []
 
