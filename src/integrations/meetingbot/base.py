@@ -27,6 +27,19 @@ class MeetingBotError(RuntimeError):
     """A provider call failed. Callers decide whether to retry or give up."""
 
 
+class MeetingNotRecorded(MeetingBotError):
+    """The bot finished without capturing anything, and never will.
+
+    Distinct from its parent because the two demand opposite responses. An
+    ordinary `MeetingBotError` is usually a timing problem — media lags the
+    `done` callback by a minute or two — and the answer is to wait and ask
+    again. This one means there is no media and no amount of waiting will
+    produce any: the bot sat in a waiting room nobody let it out of, or was
+    removed before recording started. Retrying that just delays telling the
+    user, who is meanwhile watching a meeting claim to be processing.
+    """
+
+
 @dataclass(frozen=True)
 class BotHandle:
     """What we keep after asking for a bot."""

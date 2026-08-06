@@ -18,8 +18,8 @@ from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from core.plans import get_plan
 from integrations.meetingbot import get_provider
-from integrations.meetingbot.base import MeetingBotError
-from models.meetings import STATUS_PROCESSED, Meeting
+from integrations.meetingbot.base import MeetingBotError, MeetingNotRecorded
+from models.meetings import STATUS_FAILED, STATUS_PROCESSED, Meeting
 from services.billing.access import effective_plan_id
 from services.billing.store import get_subscription
 from services.billing.usage import add_bot_seconds
@@ -36,11 +36,41 @@ RETRY_DELAY_SECONDS = 300
 def process_meeting(self, meeting_id: str) -> dict:
     try:
         return run_async(with_worker_session(lambda db: _process(db, meeting_id)))
+    except MeetingNotRecorded as exc:
+        # Nothing was captured and nothing ever will be. Retrying would spend
+        # fifteen minutes confirming that while the meeting sits in the list
+        # claiming to be processing.
+        log.info("meetings.not_recorded", meeting_id=meeting_id, error=str(exc))
+        return run_async(
+            with_worker_session(
+                lambda db: _fail(db, meeting_id, "the notetaker was never admitted to the call")
+            )
+        )
     except MeetingBotError as exc:
         # Media can lag the `done` webhook, and the provider can blip. Retrying
         # is nearly free because nothing has been persisted yet.
         log.warning("meetings.process_retry", meeting_id=meeting_id, error=str(exc))
-        raise self.retry(exc=exc, countdown=RETRY_DELAY_SECONDS) from exc
+        reason = str(exc)
+        try:
+            raise self.retry(exc=exc, countdown=RETRY_DELAY_SECONDS) from exc
+        except self.MaxRetriesExceededError:
+            # Out of retries, so nothing will revisit this row. Without this it
+            # keeps the status it had when the webhook fired and shows as
+            # "Processing" indefinitely — a meeting that looks busy forever is
+            # worse than one that says it failed.
+            log.error("meetings.process_gave_up", meeting_id=meeting_id, error=reason)
+            return run_async(
+                with_worker_session(lambda db: _fail(db, meeting_id, reason))
+            )
+
+
+async def _fail(db, meeting_id: str, reason: str) -> dict:
+    """Record why a meeting produced nothing, so the UI can stop waiting."""
+    meeting = await db.get(Meeting, uuid.UUID(meeting_id))
+    if meeting:
+        meeting.status = STATUS_FAILED
+        meeting.status_detail = reason[:200]
+    return {"failed": reason}
 
 
 def compute_duration_seconds(meeting: Meeting, payload: dict, now: datetime) -> int:

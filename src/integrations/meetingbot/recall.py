@@ -33,6 +33,7 @@ from integrations.meetingbot.base import (
     BotState,
     MeetingBotError,
     MeetingDetails,
+    MeetingNotRecorded,
     RecordingMedia,
     Transcript,
     TranscriptSegment,
@@ -182,6 +183,18 @@ class RecallProvider:
 
     def fetch_transcript(self, bot_id: str) -> Transcript:
         data = _request("GET", f"/api/v1/bot/{bot_id}/")
+
+        # No recordings at all is a different thing from a transcript that
+        # hasn't been assembled yet. Recall creates the recording as soon as it
+        # starts capturing, so an empty list means capture never began — the
+        # bot was left in a waiting room, or removed before it was admitted.
+        # Waiting for that to change is waiting for something that already
+        # finished not happening.
+        if not (data.get("recordings") or []):
+            raise MeetingNotRecorded(
+                f"Bot {bot_id} finished without recording anything"
+            )
+
         url = (
             _first_recording(data)
             .get("media_shortcuts", {})
