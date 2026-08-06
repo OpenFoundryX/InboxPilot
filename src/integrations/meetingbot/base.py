@@ -72,6 +72,25 @@ class RecordingMedia:
 
 
 @dataclass(frozen=True)
+class MeetingDetails:
+    """What the vendor learned about the call by being in it.
+
+    All three fields are optional because all three genuinely go missing:
+    Google Meet exposes no title at all, a bot that never got in has no start
+    time, and a call the bot sat alone in has no participants. A caller fills
+    the gaps it can and leaves the rest.
+    """
+
+    title: str | None = None
+    #: Display names, in the order people first appeared. Not emails — the
+    #: platforms mostly don't hand those over.
+    participants: list[str] = field(default_factory=list)
+    #: When recording actually began, which is the closest thing to when the
+    #: meeting started. Not `join_at`, which is when we asked the bot to try.
+    started_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class TranscriptSegment:
     """One speaker's continuous run of speech."""
 
@@ -146,6 +165,17 @@ class MeetingBotProvider(Protocol):
         error: audio-only calls and recordings still being assembled are normal,
         and the caller shows what it has. Raises only when the provider itself
         cannot be reached.
+        """
+
+    def fetch_details(self, bot_id: str) -> MeetingDetails:
+        """What the bot learned about the call: title, participants, start.
+
+        Only meaningful once the bot has been in the meeting. Costs more than
+        `get_bot` — participant names may live behind a separate download — so
+        this belongs in a worker, not on a webhook's critical path.
+
+        Returns empty fields rather than raising when the vendor simply doesn't
+        know; a missing title is normal, not a failure.
         """
 
     def parse_webhook(self, body: bytes, headers) -> WebhookEvent:

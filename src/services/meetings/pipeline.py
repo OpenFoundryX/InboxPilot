@@ -58,6 +58,14 @@ async def finalize(db, meeting: Meeting, *, speakers_labelled: bool = True) -> d
     meeting.summary = extracted["summary"]
     meeting.decisions = extracted["decisions"]
     meeting.action_items = extracted["action_items"]
+
+    # Last resort for a name. A calendar event brings the organiser's own
+    # title, and the bot can sometimes read one off the call — but Google Meet
+    # exposes none at all, so a pasted-link Meet has nothing until here. Naming
+    # it from what was actually discussed beats "Untitled meeting"; anything
+    # already set is left alone, and the user can always rename it.
+    if not meeting.title and extracted.get("title"):
+        meeting.title = extracted["title"]
     meeting.status = STATUS_PROCESSED
     meeting.status_detail = None
     await db.flush()

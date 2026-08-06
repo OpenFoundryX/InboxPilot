@@ -33,6 +33,7 @@ _SYS = """You summarize a meeting transcript for a participant who wants to skip
 
 Return ONLY JSON:
 {
+  "title": "<a specific name for this meeting, 3-8 words, as a participant would label it>",
   "overview": "<2-3 sentences: what this meeting was about and where it landed>",
   "sections": [
     {"title": "<the topic, as the group would name it — 2-5 words>",
@@ -53,6 +54,7 @@ Sections are the substance — write them as notes a participant would have take
 - Three to six bullets per section, each one line. Never pad a section to reach a count.
 
 Rules:
+- The title names the subject, not the format: "Claims assistant walkthrough" rather than "Team meeting" or "Weekly sync".
 - Only include decisions and action items that were genuinely stated. An empty list is a valid, useful answer.
 - Never invent an owner or a date. Use null.
 - Resolve relative dates ("next Tuesday", "end of week") against the meeting time given to you.
@@ -134,6 +136,10 @@ def summarize(
         return None
     return {
         "summary": summary,
+        # Only used when nothing better exists — see `pipeline.finalize`. A
+        # calendar organiser's own wording always wins over a guess from the
+        # transcript, however good the guess.
+        "title": str(data.get("title") or "").strip()[:300] or None,
         "decisions": _string_list(data.get("decisions")),
         "action_items": _action_items(data.get("action_items")),
     }

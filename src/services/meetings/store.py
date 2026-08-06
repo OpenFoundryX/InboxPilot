@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.meetings import (
     ACTIVE_STATUSES,
+    SOURCE_ADHOC,
     SOURCE_CALENDAR,
     STATUS_CANCELLED,
     STATUS_FAILED,
@@ -109,8 +110,14 @@ async def list_awaiting_bots(db: AsyncSession, user_id: uuid.UUID) -> list[Meeti
     """Rows the sweep still owes a bot: pending, with a link, not yet over.
 
     Rows left pending by an earlier provider outage are picked up here, which is
-    the retry — but only while the meeting could still be running. Ad-hoc rows
-    have no start time and are always eligible.
+    the retry — but only while the meeting could still be running.
+
+    Ad-hoc rows stay eligible regardless of their start time. They used to have
+    none at all, which the `is_(None)` arm covered; they now carry a
+    provisional stamp of when the link was pasted, purely so the list can group
+    them under today rather than "Date unknown". That stamp says nothing about
+    when the call ends, so treating it as a deadline would stop retrying a
+    meeting that is still going.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=BOOK_GRACE_MINUTES)
     result = await db.scalars(
@@ -118,7 +125,11 @@ async def list_awaiting_bots(db: AsyncSession, user_id: uuid.UUID) -> list[Meeti
             Meeting.user_id == user_id,
             Meeting.status == STATUS_PENDING,
             Meeting.bot_id.is_(None),
-            or_(Meeting.starts_at.is_(None), Meeting.starts_at > cutoff),
+            or_(
+                Meeting.starts_at.is_(None),
+                Meeting.starts_at > cutoff,
+                Meeting.source == SOURCE_ADHOC,
+            ),
         )
     )
     return [m for m in result if m.meeting_url]

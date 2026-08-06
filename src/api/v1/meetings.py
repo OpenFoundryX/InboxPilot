@@ -144,6 +144,12 @@ async def join_meeting(payload: JoinRequest, user: CurrentUser, db: DbSession) -
         meeting_url=url,
         platform=platform,
         status=STATUS_PENDING,
+        # Provisional: a pasted link carries no schedule, and a row with no
+        # start time falls into the list's "Date unknown" group — so a meeting
+        # someone is joining right now sorts below yesterday's. The bot
+        # overwrites this with the real recording start once it is in the call
+        # (`process_meeting._backfill_from_provider`).
+        starts_at=datetime.now(timezone.utc),
     )
 
     db.add(meeting)

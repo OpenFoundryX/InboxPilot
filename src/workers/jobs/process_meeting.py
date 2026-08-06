@@ -58,6 +58,46 @@ def compute_duration_seconds(meeting: Meeting, payload: dict, now: datetime) -> 
     return max(0, int((now - meeting.joined_at).total_seconds()))
 
 
+def _backfill_from_provider(meeting: Meeting) -> None:
+    """Fill in what only the bot could know: the title, who was there, when.
+
+    A meeting booked from a pasted link starts with none of this — there is no
+    calendar event to copy it from, so the row is created with a null title, no
+    start time and nobody in it, which is why the list showed "Untitled
+    meeting" and "Time unknown". The bot has since sat in the call and can
+    answer all three.
+
+    Only ever fills gaps. A calendar meeting already carries the organiser's
+    title and invitee list, and those are better than what the platform reports
+    from inside the room — Meet, in particular, reports no title at all.
+
+    Failure is swallowed: this is decoration on a recap whose real content is
+    already in hand, and no provider hiccup should cost the summary.
+    """
+    if meeting.title and meeting.starts_at and meeting.attendees:
+        return
+    try:
+        details = get_provider().fetch_details(meeting.bot_id)
+    except MeetingBotError as exc:
+        log.info("meetings.details_unavailable", meeting_id=str(meeting.id), error=str(exc))
+        return
+
+    if details.title and not meeting.title:
+        meeting.title = details.title[:300]
+    if details.participants and not meeting.attendees:
+        meeting.attendees = details.participants
+
+    # A calendar meeting's scheduled time is the one people recognise, so it
+    # stands even though the bot joined a minute either side of it. A pasted
+    # link has only the provisional stamp written when it was requested, and
+    # the moment recording actually began is strictly better than that — so
+    # here the provider wins.
+    if details.started_at and (
+        meeting.starts_at is None or meeting.calendar_event_id is None
+    ):
+        meeting.starts_at = details.started_at
+
+
 async def _process(db, meeting_id: str) -> dict:
     meeting = await db.get(Meeting, uuid.UUID(meeting_id))
     if not meeting:
@@ -84,6 +124,8 @@ async def _process(db, meeting_id: str) -> dict:
     # call where nobody spoke still produced a recording worth watching. It
     # swallows its own provider errors, so this line can never cost the recap.
     await resolve_recording_url(db, meeting)
+
+    _backfill_from_provider(meeting)
 
     # Populated only when this run is the one that freshly fetched the
     # transcript; a retry that finds `meeting.transcript` already stored (or a
