@@ -22,7 +22,7 @@ def compose_recap(meeting: Meeting) -> tuple[str, str]:
     if meeting.attendees:
         lines.append(f"With: {', '.join(meeting.attendees[:10])}")
     lines.append("")
-    lines.append(meeting.summary or "(no summary available)")
+    lines.append(_plain(meeting.summary) if meeting.summary else "(no summary available)")
 
     if meeting.decisions:
         lines.append("")
@@ -51,6 +51,32 @@ def compose_recap(meeting: Meeting) -> tuple[str, str]:
     lines.append("")
     lines.append("— InboxOS")
     return subject, "\n".join(lines)
+
+
+def _plain(summary: str) -> str:
+    """Flatten the summary's Markdown for a plain-text email.
+
+    The summary is stored as Markdown so the web app can render headings and
+    bullets, but nothing renders it here — a mail client showing literal `##`
+    and `-` makes the recap look broken. The same two markers the summarizer
+    emits are converted to the bullet style already used for decisions and
+    action items below, so the whole email reads as one document.
+    """
+    out: list[str] = []
+    for raw in summary.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            # One blank line before a heading — never a leading one, and never
+            # a second on top of the blank the Markdown already carries between
+            # blocks, which would double-space the whole email.
+            if out and out[-1] != "":
+                out.append("")
+            out.append(line[3:].strip())
+        elif line.startswith("- "):
+            out.append(f"  • {line[2:].strip()}")
+        else:
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 def _meeting_link(meeting: Meeting) -> str:

@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
+    # Meeting summarization runs on its own model. `OPENAI_MODEL` is the cheap
+    # workhorse for classification, where one label is the whole output; a
+    # meeting recap is long-form structured writing over tens of thousands of
+    # characters, and mini's flat, generic prose is exactly where it shows.
+    # Once per meeting, so the cost difference is small against the bot-hour.
+    SUMMARY_MODEL: str = "gpt-4o"
 
     CLASSIFIER_MODELS: str = "gpt-4o-mini,gpt-4o"
 

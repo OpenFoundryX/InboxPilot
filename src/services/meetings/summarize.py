@@ -19,10 +19,13 @@ from core.logging import get_logger
 
 log = get_logger(__name__)
 
-# gpt-4o-mini holds far more than this, but a long call is mostly filler and
-# tokens cost money. Head and tail are kept because agendas are set at the start
-# and commitments are made at the end — the middle is the expendable part.
-MAX_TRANSCRIPT_CHARS = 60_000
+# A long call is mostly filler and tokens cost money, so there is still a cap —
+# but sections are meant to cover what the meeting actually spent time on, and a
+# dropped middle is a missing topic rather than a slightly thinner paragraph.
+# 120k characters is roughly a three-hour meeting, so in practice nothing is
+# elided; head and tail are still what survive when something must be, because
+# agendas are set at the start and commitments made at the end.
+MAX_TRANSCRIPT_CHARS = 120_000
 _HEAD_SHARE = 0.6
 _ELISION = "\n\n[… middle of the meeting omitted …]\n\n"
 
@@ -30,7 +33,11 @@ _SYS = """You summarize a meeting transcript for a participant who wants to skip
 
 Return ONLY JSON:
 {
-  "summary": "<3-6 sentence plain-prose recap of what the meeting was about and where it landed>",
+  "overview": "<2-3 sentences: what this meeting was about and where it landed>",
+  "sections": [
+    {"title": "<the topic, as the group would name it — 2-5 words>",
+     "bullets": ["<a specific point made under that topic>"]}
+  ],
   "decisions": ["<a decision the group actually reached>"],
   "action_items": [
     {"what": "<the commitment, imperative and specific>",
@@ -38,6 +45,12 @@ Return ONLY JSON:
      "due_at": "<YYYY-MM-DDTHH:MM:SS, or null if no date was given>"}
   ]
 }
+
+Sections are the substance — write them as notes a participant would have taken:
+- One section per topic the meeting actually spent time on, in the order discussed. Most meetings have three to seven.
+- Title them after the subject matter ("Upload Bills & OCR"), not the discourse ("Discussion", "Next topic").
+- Bullets carry the specifics: numbers, names, limits, formats, constraints, disagreements. "Demo file-size limit set to 10MB; storage limit pending decision" is useful. "The team discussed limits" is not.
+- Three to six bullets per section, each one line. Never pad a section to reach a count.
 
 Rules:
 - Only include decisions and action items that were genuinely stated. An empty list is a valid, useful answer.
@@ -100,7 +113,7 @@ def summarize(
 
     try:
         resp = _client().chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=settings.SUMMARY_MODEL,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
@@ -116,7 +129,7 @@ def summarize(
         log.exception("meetings.summarize_failed", title=title)
         return None
 
-    summary = str(data.get("summary") or "").strip()
+    summary = _compose(data)
     if not summary:
         return None
     return {
@@ -124,6 +137,41 @@ def summarize(
         "decisions": _string_list(data.get("decisions")),
         "action_items": _action_items(data.get("action_items")),
     }
+
+
+def _compose(data: Any) -> str:
+    """Flatten the model's overview and sections into one Markdown document.
+
+    Markdown rather than a new column, because `summary` is already the field
+    every reader reaches for — the detail page renders it through the same
+    Markdown component the chat uses, so headings and bullets arrive formatted
+    with no schema change and nothing to migrate. The recap email flattens the
+    same string back to plain text.
+
+    Returns "" when there is nothing worth showing, which the caller treats as
+    a failed extraction.
+    """
+    parts: list[str] = []
+
+    overview = str(data.get("overview") or "").strip() if isinstance(data, dict) else ""
+    if overview:
+        parts.append(overview)
+
+    for section in (data.get("sections") if isinstance(data, dict) else None) or []:
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title") or "").strip()
+        bullets = [
+            str(b).strip() for b in (section.get("bullets") or []) if str(b).strip()
+        ]
+        # A title with nothing under it is a heading for an empty section, and
+        # bullets with no title have nowhere to sit. Both are dropped rather
+        # than rendered as a gap in the notes.
+        if not title or not bullets:
+            continue
+        parts.append(f"## {title}\n" + "\n".join(f"- {b}" for b in bullets))
+
+    return "\n\n".join(parts).strip()
 
 
 def _string_list(value: Any) -> list[str]:
