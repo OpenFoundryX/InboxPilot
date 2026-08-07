@@ -24,4 +24,5 @@ async def complete_onboarding(user: CurrentUser, db: DbSession) -> User:
     """
     if user.onboarded_at is None:
         user.onboarded_at = datetime.now(timezone.utc)
+
     return user

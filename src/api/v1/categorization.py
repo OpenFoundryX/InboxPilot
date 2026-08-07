@@ -89,6 +89,7 @@ async def list_categories(user: CurrentUser, db: DbSession) -> list[EmailCategor
 async def update_category(
     key: str, payload: CategoryUpdate, user: CurrentUser, db: DbSession
 ) -> EmailCategory:
+
     # Seed first: a user who PATCHes before ever listing still has a taxonomy.
     existing = await get_or_create_categories(db, user.id)
 

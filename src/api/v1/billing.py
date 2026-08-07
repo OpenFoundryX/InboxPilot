@@ -127,8 +127,10 @@ def _trial_available(sub: Subscription | None, now: datetime) -> bool:
     """
     if sub is None:
         return True
+
     if not sub.trial_consumed:
         return True
+
     return sub.trial_ends_at is not None and sub.trial_ends_at > now
 
 
@@ -145,6 +147,7 @@ def _subscription_started(sub: Subscription | None) -> bool:
     """
     if sub is None:
         return False
+
     return sub.comped or sub.status in SUBSCRIPTION_STARTED_STATUSES
 
 
@@ -389,28 +392,23 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
 
 @router.post("/cancel", response_model=SubscriptionOut)
 async def cancel(user: CurrentUser, db: Db) -> SubscriptionOut:
+
     sub = await get_subscription(db, user.id)
     if not sub or not sub.razorpay_subscription_id:
         raise HTTPException(status.HTTP_409_CONFLICT, "No active subscription to cancel.")
 
-    # `cancel_at_cycle_end` only works once a billing cycle is running
-    # (`active` / `pending`). During the trial (`authenticated`) — or before
-    # the mandate is signed (`created`) — Razorpay rejects cycle-end cancel
-    # with "Subscription cannot be cancelled since no billing cycle is going
-    # on". Immediate cancel is the right semantics there anyway: nothing has
-    # been charged yet, so there is no prepaid period to honour.
+
     at_cycle_end = sub.status in {STATUS_ACTIVE, STATUS_PENDING}
     razorpay_client.cancel_subscription(
         subscription_id=sub.razorpay_subscription_id, at_cycle_end=at_cycle_end
     )
-    # Cycle-end: keep access until the period closes; the webhook flips
-    # `status` later. Immediate (trial): mark cancelled locally now so the UI
-    # doesn't keep looking entitled while we wait for the webhook.
+
     if at_cycle_end:
         sub.cancel_at_period_end = True
     else:
         sub.cancel_at_period_end = False
         sub.status = STATUS_CANCELLED
+
     await db.flush()
 
     return await _subscription_out(sub, user.id, db)
