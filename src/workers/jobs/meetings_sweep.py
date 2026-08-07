@@ -8,6 +8,9 @@ The calendar read spans a full day even though bots are only booked inside the
 user's lookahead window: `rules.skip_reason` enforces the window itself, and the
 wider read is what makes a deleted event distinguishable from one that is simply
 further out. One API call either way.
+
+It also carries the janitor for uploads that were announced and never arrived —
+unrelated to bots, but it wants the same every-minute tick and the same session.
 """
 
 import uuid
@@ -21,15 +24,18 @@ from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
 from models.meetings import (
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_SCHEDULED,
     Meeting,
     MeetingSettings,
 )
 from models.users import User
 from services.billing.entitlements import FEATURE_MEETING_BOT, check
+from services.meetings.media import discard
 from services.meetings.rules import skip_reason
 from services.meetings.store import (
     get_or_create_settings,
+    list_abandoned_media,
     list_awaiting_bots,
     list_enabled_settings,
     list_scheduled_upcoming,
@@ -71,8 +77,43 @@ async def _sweep(db) -> dict:
         scheduled += result[0]
         cancelled += result[1]
 
+    abandoned = await _expire_abandoned_media(db)
+
     await db.commit()
-    return {"users": users, "scheduled": scheduled, "cancelled": cancelled}
+    return {
+        "users": users,
+        "scheduled": scheduled,
+        "cancelled": cancelled,
+        "abandoned": abandoned,
+    }
+
+
+async def _expire_abandoned_media(db) -> int:
+    """Fail rows whose upload never arrived, and remove any partial object.
+
+    Runs across every user, unlike the bot passes above: an upload has nothing
+    to do with auto-join, so scoping this to the users those passes visit would
+    leave everyone else's abandoned rows and orphaned bytes to accumulate.
+
+    A partial object is deleted before the row is failed. If that delete fails
+    the row is still failed — it is genuinely dead either way — and the object
+    is caught by retention pruning later, which selects on `media_key` and does
+    not care whether the upload ever completed.
+    """
+    now = datetime.now(timezone.utc)
+    expired = 0
+    for meeting in await list_abandoned_media(db, now=now):
+        await discard(meeting)
+        meeting.status = STATUS_FAILED
+        meeting.status_detail = "upload never completed"
+        expired += 1
+        log.info(
+            "meetings.media_abandoned",
+            meeting_id=str(meeting.id),
+            user_id=str(meeting.user_id),
+            source=meeting.source,
+        )
+    return expired
 
 
 async def _sweep_user(db, settings_row: MeetingSettings) -> tuple[int, int]:

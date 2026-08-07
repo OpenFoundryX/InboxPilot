@@ -15,13 +15,26 @@ import re
 from models.meetings import PLATFORM_MEET, PLATFORM_TEAMS, PLATFORM_ZOOM
 
 # Ordered: the first pattern that matches decides the platform. Anchored on the
-# host so a URL merely *mentioning* a platform elsewhere can't match.
+# host *and* on a join path, so a link to a product page or a mere mention of a
+# platform can't be mistaken for a meeting.
+#
+# Teams has two live shapes, not one. `/l/meetup-join/` is the long form Outlook
+# has always generated. `/meet/<id>` is the shorter form Microsoft made the
+# default for personal accounts and now emits for Business invites too — it was
+# not matched here, so those meetings were tracked with no URL and no platform
+# and never got a bot, and pasting one into `POST /meetings/join` came back as
+# "no Teams link found". Both forms appear on both hosts, so they are one
+# alternation rather than two entries.
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (PLATFORM_MEET, re.compile(r"https://meet\.google\.com/[a-z0-9\-_]+", re.I)),
     (PLATFORM_ZOOM, re.compile(r"https://[\w.\-]*zoom\.us/(?:j|w|s)/[^\s<>\"'\]);]+", re.I)),
     (
         PLATFORM_TEAMS,
-        re.compile(r"https://teams\.(?:microsoft|live)\.com/l/meetup-join/[^\s<>\"'\]);]+", re.I),
+        re.compile(
+            r"https://teams\.(?:microsoft|live)\.com/"
+            r"(?:l/meetup-join/|meet/)[^\s<>\"'\]);]+",
+            re.I,
+        ),
     ),
 )
 

@@ -1,54 +1,76 @@
-"""Turn a finished recording into a recap: transcript, summary, reminders, email.
+"""Turn a bot's finished recording into a recap.
 
-Enqueued by the provider webhook when a bot reports `done`. Every step persists
-before the next begins, so a failure part-way through is recoverable by simply
-running the task again — the transcript download is the expensive part and it
-only happens once.
+Enqueued by the provider webhook when a bot reports `done`. This job owns the
+bot-specific half — fetching the vendor's transcript and metering the call —
+and hands off to `services.meetings.pipeline.finalize` for everything from the
+transcript onward, which it shares with transcribed uploads.
+
+Every step persists before the next begins, so a failure part-way through is
+recoverable by simply running the task again — the transcript download is the
+expensive part and it only happens once.
 """
 
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
 from core.plans import get_plan
 from integrations.meetingbot import get_provider
-from integrations.meetingbot.base import MeetingBotError
-from models.meetings import (
-    STATUS_DELIVERED,
-    STATUS_PROCESSED,
-    Meeting,
-)
-from models.reminders import ORIGIN_MEETING, Reminder
-from models.users import User
+from integrations.meetingbot.base import MeetingBotError, MeetingNotRecorded
+from models.meetings import STATUS_FAILED, STATUS_PROCESSED, Meeting
 from services.billing.access import effective_plan_id
 from services.billing.store import get_subscription
 from services.billing.usage import add_bot_seconds
-from services.meetings.recap import compose_recap
+from services.meetings.pipeline import finalize
 from services.meetings.recording import resolve_recording_url
-from services.meetings.store import get_or_create_settings
-from services.meetings.summarize import summarize
-from services.notify import send_to_inbox
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
 
 RETRY_DELAY_SECONDS = 300
-# Same lead as extracted email deadlines, so reminders behave consistently
-# however they were discovered.
-REMINDER_LEAD_HOURS = 24
 
 
 @celery_app.task(name="meetings.process", bind=True, max_retries=3)
 def process_meeting(self, meeting_id: str) -> dict:
     try:
         return run_async(with_worker_session(lambda db: _process(db, meeting_id)))
+    except MeetingNotRecorded as exc:
+        # Nothing was captured and nothing ever will be. Retrying would spend
+        # fifteen minutes confirming that while the meeting sits in the list
+        # claiming to be processing.
+        log.info("meetings.not_recorded", meeting_id=meeting_id, error=str(exc))
+        return run_async(
+            with_worker_session(
+                lambda db: _fail(db, meeting_id, "the notetaker was never admitted to the call")
+            )
+        )
     except MeetingBotError as exc:
         # Media can lag the `done` webhook, and the provider can blip. Retrying
         # is nearly free because nothing has been persisted yet.
         log.warning("meetings.process_retry", meeting_id=meeting_id, error=str(exc))
-        raise self.retry(exc=exc, countdown=RETRY_DELAY_SECONDS) from exc
+        reason = str(exc)
+        try:
+            raise self.retry(exc=exc, countdown=RETRY_DELAY_SECONDS) from exc
+        except self.MaxRetriesExceededError:
+            # Out of retries, so nothing will revisit this row. Without this it
+            # keeps the status it had when the webhook fired and shows as
+            # "Processing" indefinitely — a meeting that looks busy forever is
+            # worse than one that says it failed.
+            log.error("meetings.process_gave_up", meeting_id=meeting_id, error=reason)
+            return run_async(
+                with_worker_session(lambda db: _fail(db, meeting_id, reason))
+            )
+
+
+async def _fail(db, meeting_id: str, reason: str) -> dict:
+    """Record why a meeting produced nothing, so the UI can stop waiting."""
+    meeting = await db.get(Meeting, uuid.UUID(meeting_id))
+    if meeting:
+        meeting.status = STATUS_FAILED
+        meeting.status_detail = reason[:200]
+    return {"failed": reason}
 
 
 def compute_duration_seconds(meeting: Meeting, payload: dict, now: datetime) -> int:
@@ -64,6 +86,46 @@ def compute_duration_seconds(meeting: Meeting, payload: dict, now: datetime) -> 
     if meeting.joined_at is None:
         return 0
     return max(0, int((now - meeting.joined_at).total_seconds()))
+
+
+def _backfill_from_provider(meeting: Meeting) -> None:
+    """Fill in what only the bot could know: the title, who was there, when.
+
+    A meeting booked from a pasted link starts with none of this — there is no
+    calendar event to copy it from, so the row is created with a null title, no
+    start time and nobody in it, which is why the list showed "Untitled
+    meeting" and "Time unknown". The bot has since sat in the call and can
+    answer all three.
+
+    Only ever fills gaps. A calendar meeting already carries the organiser's
+    title and invitee list, and those are better than what the platform reports
+    from inside the room — Meet, in particular, reports no title at all.
+
+    Failure is swallowed: this is decoration on a recap whose real content is
+    already in hand, and no provider hiccup should cost the summary.
+    """
+    if meeting.title and meeting.starts_at and meeting.attendees:
+        return
+    try:
+        details = get_provider().fetch_details(meeting.bot_id)
+    except MeetingBotError as exc:
+        log.info("meetings.details_unavailable", meeting_id=str(meeting.id), error=str(exc))
+        return
+
+    if details.title and not meeting.title:
+        meeting.title = details.title[:300]
+    if details.participants and not meeting.attendees:
+        meeting.attendees = details.participants
+
+    # A calendar meeting's scheduled time is the one people recognise, so it
+    # stands even though the bot joined a minute either side of it. A pasted
+    # link has only the provisional stamp written when it was requested, and
+    # the moment recording actually began is strictly better than that — so
+    # here the provider wins.
+    if details.started_at and (
+        meeting.starts_at is None or meeting.calendar_event_id is None
+    ):
+        meeting.starts_at = details.started_at
 
 
 async def _process(db, meeting_id: str) -> dict:
@@ -92,6 +154,8 @@ async def _process(db, meeting_id: str) -> dict:
     # call where nobody spoke still produced a recording worth watching. It
     # swallows its own provider errors, so this line can never cost the recap.
     await resolve_recording_url(db, meeting)
+
+    _backfill_from_provider(meeting)
 
     # Populated only when this run is the one that freshly fetched the
     # transcript; a retry that finds `meeting.transcript` already stored (or a
@@ -131,89 +195,6 @@ async def _process(db, meeting_id: str) -> dict:
         log.info("meetings.empty_transcript", meeting_id=meeting_id)
         return {"skipped": "empty transcript"}
 
-    extracted = summarize(
-        meeting.transcript,
-        title=meeting.title,
-        started_at=meeting.starts_at,
-        attendees=meeting.attendees,
-    )
-    if not extracted:
-        # The transcript is saved, so re-running costs one LLM call.
-        meeting.status_detail = "summarization failed"
-        log.warning("meetings.summarize_empty", meeting_id=meeting_id)
-        return {"skipped": "summarization failed"}
-
-    meeting.summary = extracted["summary"]
-    meeting.decisions = extracted["decisions"]
-    meeting.action_items = extracted["action_items"]
-    meeting.status = STATUS_PROCESSED
-    meeting.status_detail = None
-    await db.flush()
-
-    settings_row = await get_or_create_settings(db, meeting.user_id)
-    reminders = 0
-    if settings_row.create_reminders:
-        reminders = _create_reminders(db, meeting)
-
-    user = await db.get(User, meeting.user_id)
-    sent = False
-    if settings_row.email_recap and user and user.email:
-        subject, body = compose_recap(meeting)
-        try:
-            send_to_inbox(str(meeting.user_id), user.email, subject, body)
-            meeting.recap_sent_at = datetime.now(timezone.utc)
-            meeting.status = STATUS_DELIVERED
-            sent = True
-        except Exception:
-            # Summary is already persisted and readable via the API; a failed
-            # send shouldn't lose the work or block reminders.
-            log.exception("meetings.recap_send_failed", meeting_id=meeting_id)
-
-    log.info(
-        "meetings.processed",
-        meeting_id=meeting_id,
-        action_items=len(meeting.action_items),
-        reminders=reminders,
-        recap_sent=sent,
-    )
-    return {"processed": True, "reminders": reminders, "recap_sent": sent}
-
-
-def _create_reminders(db, meeting: Meeting) -> int:
-    """One reminder per action item that came with a date.
-
-    Undated commitments are deliberately skipped — a reminder needs a time, and
-    inventing one turns a useful nudge into noise.
-    """
-    now = datetime.now(timezone.utc)
-    created = 0
-    for item in meeting.action_items or []:
-        due = _parse_due(item.get("due_at"))
-        if not due:
-            continue
-        remind_at = max(due - timedelta(hours=REMINDER_LEAD_HOURS), now)
-        owner = f" ({item['owner']})" if item.get("owner") else ""
-        db.add(
-            Reminder(
-                user_id=meeting.user_id,
-                remind_at=remind_at,
-                title=str(item["what"])[:300],
-                note=(
-                    f"From meeting: {meeting.title or 'untitled'}{owner}\n"
-                    f"Due {due.isoformat()}"
-                ),
-                origin=ORIGIN_MEETING,
-            )
-        )
-        created += 1
-    return created
-
-
-def _parse_due(value) -> datetime | None:
-    if not value:
-        return None
-    try:
-        due = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due
+    # The vendor diarizes, so the summarizer can trust speaker attribution here
+    # in a way it cannot for our own transcripts.
+    return await finalize(db, meeting, speakers_labelled=True)

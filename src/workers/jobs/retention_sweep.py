@@ -5,6 +5,11 @@ a commitment rather than a feature. Media and transcripts are cleared; the
 summary, decisions, and action items survive — those are what the recap email
 already delivered and what users actually return to.
 
+Media lives in one of two places and clearing it means two different things.
+The bot vendor holds its own recordings and enforces its own retention, so
+dropping our pointer is the whole job. Uploads and browser recordings are in
+our bucket, where the object has to be deleted outright.
+
 Two policy calls, both irreversible if gotten wrong, so both are made
 explicitly rather than falling out of a shortcut:
 
@@ -22,7 +27,7 @@ explicitly rather than falling out of a shortcut:
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import run_async, with_worker_session
@@ -33,6 +38,7 @@ from models.meetings import Meeting
 from models.users import User
 from services.billing.access import ACCESS_LOCKED, effective_plan_id, resolve_access
 from services.billing.store import get_subscription
+from services.meetings.media import discard
 from workers.celery_app import celery_app
 
 log = get_logger(__name__)
@@ -70,10 +76,14 @@ async def prune_user(db: AsyncSession, user_id: uuid.UUID, now: datetime) -> dic
     entitlements = get_plan(effective_plan_id(sub)).entitlements
 
     videos = 0
+    # Both places media can live. Selecting on `recording_id` alone would match
+    # only meetings a bot attended, silently exempting every upload and browser
+    # recording from a window the pricing page states as a commitment — and
+    # leaving their objects in our bucket forever.
     stale_media = await db.scalars(
         select(Meeting).where(
             Meeting.user_id == user_id,
-            Meeting.recording_id.isnot(None),
+            or_(Meeting.recording_id.isnot(None), Meeting.media_key.isnot(None)),
         )
     )
     for meeting in stale_media:
@@ -88,6 +98,21 @@ async def prune_user(db: AsyncSession, user_id: uuid.UUID, now: datetime) -> dic
             window_days = entitlements.video_retention_days
         if not _past_window(meeting, window_days, now):
             continue
+
+        # Media in our own bucket has to actually be deleted. For a bot
+        # recording, dropping the pointer is the whole job — the vendor holds
+        # the bytes and enforces its own retention — but for ours, forgetting
+        # the key without removing the object is how a retention promise
+        # becomes fiction and storage grows forever.
+        if meeting.media_key:
+            if not await discard(meeting):
+                # The object is still there. Leaving the key set is what makes
+                # the next sweep able to try again; clearing it now would
+                # orphan the object beyond anything's reach.
+                continue
+            meeting.media_key = None
+            meeting.media_confirmed_at = None
+
         meeting.recording_id = None
         meeting.recording_url = None
         meeting.recording_url_expires_at = None

@@ -18,7 +18,9 @@ class MeetingRead(BaseModel):
     id: uuid.UUID
     source: str
     title: str | None = None
-    meeting_url: str
+    # Null for uploads and browser recordings — there is no call to join, only
+    # media that was captured some other way.
+    meeting_url: str | None = None
     platform: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
@@ -54,6 +56,60 @@ class JoinRequest(BaseModel):
 
     meeting_url: str = Field(min_length=1)
     title: str | None = None
+
+
+class UploadRequest(BaseModel):
+    """Announce a recording before sending it.
+
+    Everything here is the client's claim about a file we have not seen. The
+    size is checked against the plan limit now *and* signed into the upload
+    permission, so a client that understates it is refused by the bucket rather
+    than believed by us.
+    """
+
+    filename: str | None = Field(default=None, max_length=300)
+    content_type: str = Field(min_length=1, max_length=100)
+    size_bytes: int = Field(gt=0)
+    title: str | None = Field(default=None, max_length=300)
+    # Attach the recording to a meeting already on the calendar — the "Link to
+    # event" dropdown. Null means the upload stands on its own.
+    calendar_event_id: str | None = Field(default=None, max_length=256)
+
+
+class StartLiveRequest(BaseModel):
+    """Begin recording in the browser.
+
+    No size or type: neither is known when recording starts. The server picks
+    both, since it is the one that has to sign an upload permission for a file
+    that does not exist yet.
+    """
+
+    title: str | None = Field(default=None, max_length=300)
+
+
+class UploadTarget(BaseModel):
+    """Permission to PUT exactly one object, and the row it belongs to.
+
+    The bytes go browser-to-bucket and never through this API — a gigabyte
+    through FastAPI would pin a worker for minutes and pay egress twice. The
+    client must send `headers` verbatim; they are part of what was signed.
+    """
+
+    meeting: MeetingRead
+    upload_url: str
+    headers: dict[str, str]
+    expires_at: datetime
+
+
+class MeetingUpdate(BaseModel):
+    """Rename a meeting.
+
+    An empty title is meaningful, not a mistake: it clears the name and lets the
+    list fall back to naming the meeting by its date, which is what an untitled
+    meeting looked like before anyone typed anything.
+    """
+
+    title: str | None = Field(default=None, max_length=300)
 
 
 class EnableBotRequest(BaseModel):

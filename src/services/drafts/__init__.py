@@ -6,7 +6,7 @@ Layering, outermost in:
 - `extract`   — turn an uploaded file into text
 - `context`   — assemble the prompt from settings + files, under a char budget
 - `generate`  — the one OpenAI call; may decline to draft
-- `create`    — the orchestrator both the arrival job and the sweep call
+- `create`    — the orchestrator both scheduled passes call
 - `sweep`     — catch-up pass over recent mail in the selected categories
 - `follow_up` — find quiet threads worth nudging
 

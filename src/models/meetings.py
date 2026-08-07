@@ -22,6 +22,14 @@ from models.base import Base, TimestampMixin, UUIDMixin
 # Where the meeting came from.
 SOURCE_CALENDAR = "calendar"
 SOURCE_ADHOC = "adhoc"
+SOURCE_UPLOAD = "upload"  # a media file the user handed us
+SOURCE_LIVE = "live"  # recorded in the browser, no call to join
+
+# Sources whose media we hold ourselves rather than the bot vendor. They differ
+# only in how the bytes were produced: one is a file the user already had, the
+# other is one their browser just made. Everything downstream — storage,
+# transcription, metering, retention — treats them identically.
+SELF_HOSTED_SOURCES = frozenset({SOURCE_UPLOAD, SOURCE_LIVE})
 
 # Lifecycle. pending means "we want a bot but don't have one yet" — the sweep
 # retries those, so a provider outage costs a delay rather than the meeting.
@@ -71,7 +79,9 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     calendar_event_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     title: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    meeting_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Null for uploads and browser recordings: there is no call to join, only
+    # media to transcribe. Non-null for everything a bot attends.
+    meeting_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     platform: Mapped[str | None] = mapped_column(String(16), nullable=True)
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -108,6 +118,25 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Where our own copy of the media lives, for uploads and browser recordings.
+    # This is the discriminator the whole self-hosted path turns on: `media_key`
+    # set means the bytes are in our bucket, `bot_id` set means they are the
+    # vendor's. `recording_id` stays the vendor's handle and is never used for
+    # ours — the two must not be conflated, or a prune written for one silently
+    # skips the other.
+    media_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # When the object was confirmed present in the bucket, by asking the bucket.
+    # A key is reserved before the browser starts uploading, so `media_key`
+    # alone only means "we expect bytes" — this means "the bytes are there".
+    # Everything that would hand out a link, badge the row as playable, or queue
+    # transcription keys on this rather than on `media_key`, because presigning
+    # a key that was never written yields a URL that 404s in the user's player.
+    # Its absence on an old row is also what identifies an abandoned upload.
+    media_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # The retention windows in force when this meeting was captured, in days.
     # Written once at processing time from the plan the user was on then, and
     # never touched by a later plan change — a later downgrade must not shorten
@@ -137,8 +166,12 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
 
         That is the whole point: the list badges rows for free, and only the
         detail view pays for a live link.
+
+        Our own media counts once confirmed, not once reserved: a row that
+        claimed a key and never received bytes has no recording, and badging it
+        as playable offers a Watch button that resolves to nothing.
         """
-        return bool(self.recording_id or self.recording_url)
+        return bool(self.recording_id or self.recording_url or self.media_confirmed_at)
 
 
 class MeetingSettings(UUIDMixin, TimestampMixin, Base):

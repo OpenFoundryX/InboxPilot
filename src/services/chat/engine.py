@@ -5,18 +5,19 @@ module owns the decision-making. That keeps the interesting logic — intent
 routing, event ordering, graceful degradation — unit-testable with nothing but
 fakes.
 
-Three paths, chosen by `intent.classify`:
+Two gates, in order:
 
-- smalltalk ("who are you?", "what can you do?") — answered from the persona,
-  with no mailbox access and no Gmail connection required.
-- question ("show me my important emails") — retrieve context, stream a
-  grounded answer.
-- command ("archive everything from x@y.com") — *propose* the actions and
-  stop; execution needs an explicit confirm.
+- A message that opens with "/" is a command. It is resolved against the
+  registry and proposed as actions — no classification, and for the four
+  fixed-action commands, no model call at all.
+- Anything else is classified. Smalltalk answers from the persona, a question
+  retrieves and answers, and a message that *reads* like a command is answered
+  too, with the slash form suggested beneath it.
 
-Only the command path can raise a confirm card. That distinction is the whole
-point of classifying: a question that came back as a card was a dead end for
-the user, since there was nothing to approve and no answer either.
+Prose can no longer mutate anything. That is the point: the classifier used to
+sit in front of `parse_command`, so a wrong guess produced a confirm card with
+nothing worth approving and no answer either. Now a wrong guess costs one
+sentence under a real answer.
 """
 
 from collections.abc import AsyncIterator
@@ -31,11 +32,14 @@ from services.chat.intent import (
     INTENT_COMMAND,
     INTENT_QUESTION,
     INTENT_SMALLTALK,
+    Intent,
     classify,
 )
 from services.chat.sources.base import Excerpt, Retriever
+from services.commands import slash
 from services.commands.ask import ANSWER_RULES
 from services.commands.parser import parse_command
+from services.commands.registry import help_text
 from services.persona import CAPABILITIES
 
 log = get_logger(__name__)
@@ -59,6 +63,26 @@ NOT_CONNECTED_MESSAGE = (
     "I can't read your mail yet — your Gmail account isn't connected. "
     "Connect it on the [setup page](/onboarding/connect) and ask me again."
 )
+
+# How much of the user's message is echoed back inside the suggested command.
+# Long enough to carry a real instruction, short enough that the chip stays
+# readable on one or two lines.
+_NUDGE_MESSAGE_CAP = 200
+
+NUDGE_TEMPLATE = (
+    "\n\nI only make changes from a slash command — I can't act on a plain "
+    "message. Run `{prefill}` to do it."
+)
+
+
+def _nudge(command: str, message: str) -> str:
+    """The suggestion appended under an answer to a prose command.
+
+    The prefill echoes the user's own words because that is exactly the input
+    the constrained parser wants: `/rule <what they said>`.
+    """
+    prefill = f"/{command} {' '.join(message.split())[:_NUDGE_MESSAGE_CAP]}".rstrip()
+    return NUDGE_TEMPLATE.format(prefill=prefill)
 
 _CHAT_ANSWER_SYS = ANSWER_RULES + (
     "\n\nThis is a live chat, not an email: do NOT sign off, and do not repeat the "
@@ -147,20 +171,19 @@ async def stream_smalltalk(message: str, history: list[dict]) -> AsyncIterator[s
         yield delta
 
 
-async def _intent(user_id: str, message: str, history: list[dict]) -> str:
+async def _intent(user_id: str, message: str, history: list[dict]) -> Intent:
     """Classify the message, degrading to the answer path if the router fails.
 
-    A classifier outage must not turn every message into a confirm card, and it
-    must not fail the turn either: `stream_answer` will re-raise a genuine
-    configuration problem (a missing API key) with a friendlier message.
+    A classifier outage must not fail the turn: `stream_answer` will re-raise a
+    genuine configuration problem (a missing API key) with a friendlier message.
     """
     try:
-        intent = await run_in_threadpool(classify, message, history)
+        result = await run_in_threadpool(classify, message, history)
     except Exception:
         log.warning("chat.classify_failed", user_id=user_id, exc_info=True)
-        return INTENT_QUESTION
-    log.info("chat.intent", user_id=user_id, intent=intent)
-    return intent
+        return Intent(INTENT_QUESTION)
+    log.info("chat.intent", user_id=user_id, intent=result.kind, command=result.command)
+    return result
 
 
 def _proposal_lead_in(summary: str) -> str:
@@ -169,6 +192,75 @@ def _proposal_lead_in(summary: str) -> str:
         return "Here's what I'll do — approve below and I'll go ahead."
     summary = summary[0].upper() + summary[1:]
     return f"{summary.rstrip('.')} — approve below and I'll go ahead."
+
+
+def _propose(proposed: list[dict], summary: str) -> list[tuple[str, dict]]:
+    """The lead-in and the confirm card, in that order.
+
+    A card on its own reads as a demand with no explanation, so say what is
+    about to happen before asking anyone to approve it.
+    """
+    return [
+        (EV_TOKEN, {"text": _proposal_lead_in(summary)}),
+        (
+            EV_ACTIONS,
+            {"actions": describe_actions(proposed), "raw": proposed, "summary": summary},
+        ),
+    ]
+
+
+async def _command_events(
+    *, user_id: str, message: str, timezone: str
+) -> AsyncIterator[tuple[str, dict]]:
+    """Handle a message that opens with "/". Never retrieves, never answers."""
+    resolved = slash.resolve(message)
+
+    if resolved.kind == slash.KIND_HELP:
+        yield EV_TOKEN, {"text": help_text()}
+        return
+
+    if resolved.kind == slash.KIND_UNKNOWN:
+        log.info("chat.slash_unknown", user_id=user_id, name=resolved.raw_name)
+        yield EV_TOKEN, {"text": f"I don't know `/{resolved.raw_name}`.\n\n{help_text()}"}
+        return
+
+    command = resolved.command
+    if command is None:
+        # `resolve` only returns KIND_COMMAND with a command attached, so this
+        # is unreachable — it exists to narrow the type rather than to handle
+        # a case, and returning silently beats raising on a user's turn.
+        log.warning("chat.slash_resolution_without_command", user_id=user_id)
+        return
+
+    if command.fixed_action is not None:
+        # Nothing to extract — `/catchup` *is* the action. Trailing text is
+        # ignored rather than parsed, so the card always says what will run.
+        # (`yield from` is a syntax error in an async generator, hence the loop.)
+        for event in _propose([dict(command.fixed_action)], ""):
+            yield event
+        return
+
+    if not resolved.args:
+        yield EV_TOKEN, {"text": f"`/{command.name}` needs a bit more. Try:\n\n`{command.usage}`"}
+        return
+
+    yield EV_STAGE, {"label": "Working out what to change"}
+    parsed = await run_in_threadpool(
+        parse_command, None, resolved.args, timezone, command.action_types
+    )
+    proposed = parsed.get("actions") or []
+    if not proposed:
+        # A strict slash rule means saying so. Falling through to an answer
+        # would silently swallow a change the user explicitly asked for.
+        log.info("chat.slash_no_actions", user_id=user_id, name=command.name)
+        yield EV_TOKEN, {
+            "text": f"I couldn't work out what to change from that. Try:\n\n`{command.usage}`"
+        }
+        return
+
+    log.info("chat.actions_proposed", user_id=user_id, name=command.name, count=len(proposed))
+    for event in _propose(proposed, parsed.get("summary") or ""):
+        yield event
 
 
 async def turn_events(
@@ -181,36 +273,23 @@ async def turn_events(
     gmail_connected: bool,
 ) -> AsyncIterator[tuple[str, dict]]:
     """Drive one turn, yielding (event_name, payload) pairs."""
+    if slash.resolve(message).kind != slash.KIND_NONE:
+        async for event in _command_events(user_id=user_id, message=message, timezone=timezone):
+            yield event
+        return
+
     yield EV_STAGE, {"label": "Reading your question"}
 
     intent = await _intent(user_id, message, history)
 
-    if intent == INTENT_SMALLTALK:
+    if intent.kind == INTENT_SMALLTALK:
         async for delta in stream_smalltalk(message, history):
             yield EV_TOKEN, {"text": delta}
         return
 
-    if intent == INTENT_COMMAND:
-        # `parse_command` reads a subject line too; chat has none.
-        parsed = await run_in_threadpool(parse_command, None, message, timezone)
-        actions = parsed.get("actions") or []
-        summary = parsed.get("summary") or ""
-        if actions:
-            log.info("chat.actions_proposed", user_id=user_id, count=len(actions))
-            # A card on its own reads as a demand with no explanation, so say
-            # what is about to happen before asking them to approve it.
-            yield EV_TOKEN, {"text": _proposal_lead_in(summary)}
-            yield EV_ACTIONS, {
-                "actions": describe_actions(actions),
-                "raw": actions,
-                "summary": summary,
-            }
-            return
-        # Classified as a command, but nothing actionable came back. Answering
-        # beats a silent turn, so fall through to the question path.
-        log.info("chat.command_without_actions", user_id=user_id)
-
     if not gmail_connected:
+        # A user with no mailbox connected has a more immediate problem than
+        # command syntax, so no nudge here even for INTENT_COMMAND.
         yield EV_SOURCES, {"sources": []}
         yield EV_TOKEN, {"text": NOT_CONNECTED_MESSAGE}
         return
@@ -230,3 +309,7 @@ async def turn_events(
     yield EV_STAGE, {"label": "Writing answer"}
     async for delta in stream_answer(message, history, excerpts):
         yield EV_TOKEN, {"text": delta}
+
+    if intent.kind == INTENT_COMMAND and intent.command:
+        log.info("chat.nudged", user_id=user_id, command=intent.command)
+        yield EV_TOKEN, {"text": _nudge(intent.command, message)}

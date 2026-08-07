@@ -32,6 +32,8 @@ from integrations.meetingbot.base import (
     BotHandle,
     BotState,
     MeetingBotError,
+    MeetingDetails,
+    MeetingNotRecorded,
     RecordingMedia,
     Transcript,
     TranscriptSegment,
@@ -181,6 +183,18 @@ class RecallProvider:
 
     def fetch_transcript(self, bot_id: str) -> Transcript:
         data = _request("GET", f"/api/v1/bot/{bot_id}/")
+
+        # No recordings at all is a different thing from a transcript that
+        # hasn't been assembled yet. Recall creates the recording as soon as it
+        # starts capturing, so an empty list means capture never began — the
+        # bot was left in a waiting room, or removed before it was admitted.
+        # Waiting for that to change is waiting for something that already
+        # finished not happening.
+        if not (data.get("recordings") or []):
+            raise MeetingNotRecorded(
+                f"Bot {bot_id} finished without recording anything"
+            )
+
         url = (
             _first_recording(data)
             .get("media_shortcuts", {})
@@ -225,6 +239,68 @@ class RecallProvider:
             expires_at=_presigned_expiry(str(url)),
         )
 
+    def fetch_details(self, bot_id: str) -> MeetingDetails:
+        """Title, participants, and recording start, from the finished bot.
+
+        Every one of these sits somewhere different, and none of them is where
+        the API docs' top-level `meeting_metadata`/`meeting_participants` would
+        suggest — on this API version those keys are absent from the bot object
+        entirely, and the real data hangs off the recording's `media_shortcuts`.
+
+        The title is frequently null and that is not an error: Google Meet does
+        not expose a meeting name to anyone, so no provider can supply one.
+        """
+        data = _request("GET", f"/api/v1/bot/{bot_id}/")
+        recording = _first_recording(data)
+
+        title = _dig(recording, "media_shortcuts", "meeting_metadata", "data", "title")
+        started_at = _parse_instant(recording.get("started_at"))
+
+        return MeetingDetails(
+            title=str(title).strip() if title else None,
+            # Our own bot is a participant as far as the platform is concerned;
+            # its name comes from the same payload so the filter can't drift
+            # from whatever this user actually named it.
+            participants=self._participants(recording, str(data.get("bot_name") or "")),
+            started_at=started_at,
+        )
+
+    def _participants(self, recording: dict, bot_name: str) -> list[str]:
+        """Names in the order they first joined.
+
+        The participant list is a stream of join/leave events behind its own
+        presigned download, not a field — so this is one extra request, and a
+        failure to fetch it costs the attendee list rather than the recap.
+        """
+        url = _dig(
+            recording,
+            "media_shortcuts",
+            "participant_events",
+            "data",
+            "participant_events_download_url",
+        )
+        if not url:
+            return []
+
+        try:
+            resp = httpx.get(str(url), timeout=settings.RECALL_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            events = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.info("recall.participants_unavailable", error=str(exc))
+            return []
+
+        seen: dict[str, None] = {}
+        for event in events if isinstance(events, list) else []:
+            if not isinstance(event, dict):
+                continue
+            name = ((event.get("participant") or {}).get("name") or "").strip()
+            # The bot is in the room too, and listing ourselves as an attendee
+            # would be odd in a recap addressed to the person who sent us.
+            if name and name != bot_name:
+                seen.setdefault(name, None)
+        return list(seen)
+
     def parse_webhook(self, body: bytes, headers) -> WebhookEvent:
         _verify_signature(body, headers)
 
@@ -266,6 +342,17 @@ def _dig(node: Any, *keys: str) -> Any:
             return None
         node = node.get(key)
     return node
+
+
+def _parse_instant(value: Any) -> datetime | None:
+    """Recall's ISO-8601 timestamps, which end in `Z` rather than an offset."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _presigned_expiry(url: str) -> datetime:

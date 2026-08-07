@@ -41,6 +41,56 @@ services:
       timeout: 5s
       retries: 5
 
+  # Local stand-in for S3/R2, holding uploaded and browser-recorded meeting
+  # media. Reachable at `minio:9000` from the other services and
+  # `localhost:9000` from the browser — which is why S3_PUBLIC_ENDPOINT_URL
+  # exists: a presigned URL's signature covers the host, so one signed for the
+  # internal name is rejected the moment a browser opens it.
+  #
+  # CORS is wide open because the browser PUTs uploads straight here. That is
+  # fine for a local bucket of test recordings and is not how a real bucket
+  # should be configured.
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-inboxos}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-inboxos-secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    ports:
+      # Published on 9002/9003 rather than MinIO's usual 9000/9001, which are
+      # commonly already taken by another project's MinIO on a dev machine.
+      # Only the host side moves — inside the network this is still :9000, which
+      # is why S3_ENDPOINT_URL and S3_PUBLIC_ENDPOINT_URL name different ports.
+      - "${MINIO_API_PORT:-9002}:9000"      # S3 API
+      - "${MINIO_CONSOLE_PORT:-9003}:9001"  # console -> http://localhost:9003
+    volumes:
+      - miniodata:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the bucket once MinIO is up, then exits. A one-shot job rather than
+  # a long-running service, so `depends_on: service_completed_successfully` is
+  # what tells the API the bucket exists.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-inboxos-media}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-inboxos}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-inboxos-secret}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$S3_ACCESS_KEY_ID $$S3_SECRET_ACCESS_KEY &&
+      mc mb --ignore-existing local/$$S3_BUCKET &&
+      echo 'bucket ready: '$$S3_BUCKET
+      "
+
   api:
     build:
       context: .
@@ -55,9 +105,16 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
+      # Operator scripts, run with `docker compose exec api python scripts/...`.
+      # Mounted rather than baked in so editing one doesn't need a rebuild, and
+      # only here: they are one-off diagnostics, not something worker or beat
+      # ever executes.
+      - ./scripts:/app/scripts
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
@@ -72,6 +129,10 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      # The worker downloads media from the bucket to transcribe it, so it
+      # needs the bucket to exist just as much as the API does.
+      minio-init:
+        condition: service_completed_successfully
     volumes:
       - ./src:/app/src
     command: celery -A worker.celery_app worker --loglevel=info
@@ -112,3 +173,4 @@ services:
 volumes:
   pgdata:
   rabbitmq_data:
+  miniodata:

@@ -8,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.meetings import (
     ACTIVE_STATUSES,
+    SOURCE_ADHOC,
     SOURCE_CALENDAR,
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_PENDING,
     Meeting,
     MeetingSettings,
@@ -108,8 +110,14 @@ async def list_awaiting_bots(db: AsyncSession, user_id: uuid.UUID) -> list[Meeti
     """Rows the sweep still owes a bot: pending, with a link, not yet over.
 
     Rows left pending by an earlier provider outage are picked up here, which is
-    the retry — but only while the meeting could still be running. Ad-hoc rows
-    have no start time and are always eligible.
+    the retry — but only while the meeting could still be running.
+
+    Ad-hoc rows stay eligible regardless of their start time. They used to have
+    none at all, which the `is_(None)` arm covered; they now carry a
+    provisional stamp of when the link was pasted, purely so the list can group
+    them under today rather than "Date unknown". That stamp says nothing about
+    when the call ends, so treating it as a deadline would stop retrying a
+    meeting that is still going.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=BOOK_GRACE_MINUTES)
     result = await db.scalars(
@@ -117,7 +125,11 @@ async def list_awaiting_bots(db: AsyncSession, user_id: uuid.UUID) -> list[Meeti
             Meeting.user_id == user_id,
             Meeting.status == STATUS_PENDING,
             Meeting.bot_id.is_(None),
-            or_(Meeting.starts_at.is_(None), Meeting.starts_at > cutoff),
+            or_(
+                Meeting.starts_at.is_(None),
+                Meeting.starts_at > cutoff,
+                Meeting.source == SOURCE_ADHOC,
+            ),
         )
     )
     return [m for m in result if m.meeting_url]
@@ -137,6 +149,36 @@ async def list_scheduled_upcoming(db: AsyncSession, user_id: uuid.UUID) -> list[
             Meeting.calendar_event_id.is_not(None),
             Meeting.starts_at.is_not(None),
             Meeting.starts_at > now,
+        )
+    )
+    return list(result)
+
+
+#: How long a reserved key may sit without bytes before we give up on it. Long
+#: enough that a slow 1 GB upload on a bad connection is never mistaken for an
+#: abandoned one, short enough that a user who closed the tab sees an honest
+#: failure rather than a row stuck on "Processing" indefinitely.
+ABANDONED_MEDIA_HOURS = 24
+
+
+async def list_abandoned_media(db: AsyncSession, *, now: datetime) -> list[Meeting]:
+    """Rows that reserved a key and never received the bytes.
+
+    A meeting whose upload was announced but never completed — the tab was
+    closed, the browser recording died mid-call, the network dropped. The row
+    and any partial object both need clearing.
+
+    Queried across all users rather than per-user: uploads have nothing to do
+    with auto-join, so scoping this to the users the bot sweep visits would
+    leave everyone else's abandoned rows to accumulate forever.
+    """
+    cutoff = now - timedelta(hours=ABANDONED_MEDIA_HOURS)
+    result = await db.scalars(
+        select(Meeting).where(
+            Meeting.media_key.is_not(None),
+            Meeting.media_confirmed_at.is_(None),
+            Meeting.created_at < cutoff,
+            Meeting.status.notin_((STATUS_FAILED, STATUS_CANCELLED)),
         )
     )
     return list(result)

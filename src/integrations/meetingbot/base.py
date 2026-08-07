@@ -27,6 +27,19 @@ class MeetingBotError(RuntimeError):
     """A provider call failed. Callers decide whether to retry or give up."""
 
 
+class MeetingNotRecorded(MeetingBotError):
+    """The bot finished without capturing anything, and never will.
+
+    Distinct from its parent because the two demand opposite responses. An
+    ordinary `MeetingBotError` is usually a timing problem — media lags the
+    `done` callback by a minute or two — and the answer is to wait and ask
+    again. This one means there is no media and no amount of waiting will
+    produce any: the bot sat in a waiting room nobody let it out of, or was
+    removed before recording started. Retrying that just delays telling the
+    user, who is meanwhile watching a meeting claim to be processing.
+    """
+
+
 @dataclass(frozen=True)
 class BotHandle:
     """What we keep after asking for a bot."""
@@ -72,6 +85,25 @@ class RecordingMedia:
 
 
 @dataclass(frozen=True)
+class MeetingDetails:
+    """What the vendor learned about the call by being in it.
+
+    All three fields are optional because all three genuinely go missing:
+    Google Meet exposes no title at all, a bot that never got in has no start
+    time, and a call the bot sat alone in has no participants. A caller fills
+    the gaps it can and leaves the rest.
+    """
+
+    title: str | None = None
+    #: Display names, in the order people first appeared. Not emails — the
+    #: platforms mostly don't hand those over.
+    participants: list[str] = field(default_factory=list)
+    #: When recording actually began, which is the closest thing to when the
+    #: meeting started. Not `join_at`, which is when we asked the bot to try.
+    started_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class TranscriptSegment:
     """One speaker's continuous run of speech."""
 
@@ -88,10 +120,27 @@ class Transcript:
     def is_empty(self) -> bool:
         return not any(s.text.strip() for s in self.segments)
 
+    @property
+    def is_diarized(self) -> bool:
+        """Whether anything in here names who was speaking.
+
+        False for transcripts from a model that doesn't separate speakers, which
+        is every transcript of media a bot never attended. Readers use it to
+        decide how much to trust attribution.
+        """
+        return any(s.speaker for s in self.segments)
+
     def render(self, max_chars: int | None = None) -> str:
-        """Flatten to `Speaker: text` lines, oldest first."""
+        """Flatten to `Speaker: text` lines, oldest first.
+
+        A transcript with no speakers anywhere renders as bare text instead.
+        Prefixing every line with `Unknown:` would add nothing a reader can use
+        and quietly spend a fifth of the summarizer's character budget saying
+        the same word several hundred times.
+        """
+        diarized = self.is_diarized
         lines = [
-            f"{s.speaker or 'Unknown'}: {s.text.strip()}"
+            f"{s.speaker or 'Unknown'}: {s.text.strip()}" if diarized else s.text.strip()
             for s in self.segments
             if s.text.strip()
         ]
@@ -129,6 +178,17 @@ class MeetingBotProvider(Protocol):
         error: audio-only calls and recordings still being assembled are normal,
         and the caller shows what it has. Raises only when the provider itself
         cannot be reached.
+        """
+
+    def fetch_details(self, bot_id: str) -> MeetingDetails:
+        """What the bot learned about the call: title, participants, start.
+
+        Only meaningful once the bot has been in the meeting. Costs more than
+        `get_bot` — participant names may live behind a separate download — so
+        this belongs in a worker, not on a webhook's critical path.
+
+        Returns empty fields rather than raising when the vendor simply doesn't
+        know; a missing title is normal, not a failure.
         """
 
     def parse_webhook(self, body: bytes, headers) -> WebhookEvent:

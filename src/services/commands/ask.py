@@ -9,6 +9,7 @@ including who sent what and which files were truly attached vs. only quoted in a
 
 import json
 import re
+from urllib.parse import quote
 
 from openai import OpenAI
 
@@ -210,15 +211,29 @@ def search_all(
     return list(by_id.values())
 
 
-# Gmail web permalink to a conversation. Putting the account's email address in the
-# `/u/<...>/` slot pins the link to the right account even when several Google
-# accounts are signed into the same browser (bare `u/0` would open the wrong one).
-# The hex thread id from the Gmail API resolves directly in the URL fragment.
+# Gmail web permalink to a conversation. The hex thread id from the Gmail API
+# resolves directly in the URL fragment.
+#
+# The `/mail/u/<...>/` slot takes an account *index*, not an address. Putting the
+# email there used to work and looked like the obvious way to pin the link to the
+# right account, but Google stopped resolving that form once a fragment follows —
+# every link built that way now returns a hard 404 ("your account is temporarily
+# unavailable"), whichever account you are signed in as.
+#
+# So the index stays `0` and the address moves to `authuser`, which is Google's
+# actual cross-account disambiguation parameter. It is a hint, not a guarantee:
+# the server cannot know the browser's sign-in order, and `authuser` is not
+# honoured consistently across Google properties. The point of this shape is that
+# it degrades to the default account's Gmail — a working page — instead of a 404.
 def thread_link(thread_id: str | None, account_email: str | None) -> str:
     if not thread_id:
         return "(no link)"
-    slot = account_email or "0"
-    return f"https://mail.google.com/mail/u/{slot}/#all/{thread_id}"
+    if not account_email:
+        return f"https://mail.google.com/mail/u/0/#all/{thread_id}"
+    # Encode the whole address: a bare "+" in a query value decodes to a space,
+    # which silently drops the sub-address from a "user+tag@" account.
+    who = quote(account_email, safe="")
+    return f"https://mail.google.com/mail/u/0/?authuser={who}#all/{thread_id}"
 
 
 def build_corpus(hits: list[EmailSummary], account_email: str | None) -> str:

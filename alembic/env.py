@@ -7,20 +7,14 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from core.config import settings
-from models.base import Base
 
-# Import model modules so their tables register on Base.metadata.
-# Add new model modules here as they are created.
-from models import activity as activity_models  # noqa: F401
-from models import auth as auth_models  # noqa: F401
-from models import billing as billing_models  # noqa: F401
-from models import categorization as categorization_models  # noqa: F401
-from models import chat as chat_models  # noqa: F401
-from models import mailman as mailman_models  # noqa: F401
-from models import meetings as meetings_models  # noqa: F401
-from models import reminders as reminders_models  # noqa: F401
-from models import routines as routines_models  # noqa: F401
-from models import users as users_models  # noqa: F401
+# Importing the package registers every model module on Base.metadata; the list
+# lives in `models/__init__.py` so there is one of it. This used to be a hand-
+# maintained copy here, and it had already fallen behind — `drafts` was missing,
+# so the next `--autogenerate` would have read the draft tables as tables that
+# should not exist and proposed dropping them.
+import models  # noqa: F401
+from models.base import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

@@ -28,6 +28,9 @@ dependencies = [
     # Multipart form parsing for those uploads — FastAPI needs it for UploadFile.
     "python-multipart>=0.0.18",
     "razorpay>=1.4",
+    # S3/R2 for meeting media we hold ourselves. Only presigning and object
+    # lifecycle — the bytes go browser-to-bucket and never through the API.
+    "boto3>=1.35",
 ]
 
 [project.optional-dependencies]
