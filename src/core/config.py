@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,29 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
     DATABASE_URL: str = "postgresql+asyncpg://inboxos_user:inboxos_password@db:5432/inboxos"
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _force_async_driver(cls, value: str) -> str:
+        """Normalise a managed provider's URL onto the driver we actually use.
+
+        Render, Heroku, Neon and friends hand out `postgres://…` or
+        `postgresql://…`. Both resolve to psycopg, and everything here — the
+        app's engine and Alembic's, which also runs async — needs asyncpg.
+        Wired straight through, the app boots and then fails on the first query
+        with a driver error that names neither the setting nor the platform.
+
+        Rewriting it here means the connection string can be injected verbatim
+        from the platform's own database binding, which is the only form it can
+        be injected in automatically.
+        """
+        for prefix in ("postgresql+asyncpg://", "postgres+asyncpg://"):
+            if value.startswith(prefix):
+                return value
+        for prefix in ("postgresql://", "postgres://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix):]
+        return value
 
     CELERY_BROKER_URL: str = "amqp://inboxos:inboxos@rabbitmq:5672//"
 

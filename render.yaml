@@ -1,0 +1,238 @@
+# Render Blueprint — API, background worker, Postgres and Redis.
+#
+# Three moving parts from one image:
+#   inboxos-api      uvicorn, public
+#   inboxos-worker   celery worker with beat embedded (-B)
+#   inboxos-db       Postgres
+#   inboxos-redis    cache, locks, rate limits AND the Celery broker
+#
+# RabbitMQ is deliberately absent. Redis is already required for locks, rate
+# limiting and the availability cache, and the workload here is per-minute cron
+# sweeps rather than throughput that needs AMQP's delivery guarantees — so the
+# broker rides on Redis and that is one managed service and one failure mode
+# fewer.
+#
+# Beat is embedded in the worker (`-B`) rather than run as a second service.
+# That halves the cost, and it is only safe while there is exactly ONE worker:
+# two embedded schedulers double-fire every sweep. Scaling workers past one
+# means splitting beat back out into its own service with `numInstances: 1`.
+#
+# Migrations run from the worker's start command because Render's pre-deploy
+# hook is not available on free instances, and the worker (unlike a free web
+# service) does not spin down. `alembic upgrade head` is a no-op once at head,
+# so re-running it on every deploy costs nothing. On paid instances, move it to
+# `preDeployCommand` on the API instead — that ordering guarantees the schema
+# is current before any request is served.
+
+services:
+  - type: web
+    name: inboxos-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Overrides the image CMD. Note the absence of --reload, which compose uses
+    # for local development and which must never reach a deployed service.
+    dockerCommand: uvicorn main:app --host 0.0.0.0 --port 8000
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+
+      # `connectionString` arrives as postgres://… — core.config rewrites it
+      # onto asyncpg, which is the only driver this app and Alembic can use.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inboxos-db
+          property: connectionString
+
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+
+      # Both of these have defaults that fail silently rather than loudly.
+      # PUBLIC_BASE_URL still points at an expired ngrok tunnel, which is where
+      # Composio would register the Gmail webhook; FRONTEND_BASE_URL still says
+      # localhost:3000, which is what every booking confirmation email would
+      # tell a guest to click. Set from this service's own URL, and to the
+      # Vercel domain, respectively.
+      - key: PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: inboxos-api
+          property: host
+      - key: FRONTEND_BASE_URL
+        sync: false
+
+      - key: JWT_SECRET
+        generateValue: true
+
+      # Secrets. `sync: false` keeps them out of git — set each once in the
+      # Render dashboard and it persists across deploys.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: POST_LOGIN_REDIRECT_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: COMPOSIO_API_KEY
+        sync: false
+      - key: COMPOSIO_GMAIL_AUTH_CONFIG_ID
+        sync: false
+      - key: COMPOSIO_GCAL_AUTH_CONFIG_ID
+        sync: false
+      - key: COMPOSIO_GMAIL_CALLBACK_URL
+        sync: false
+      - key: COMPOSIO_WEBHOOK_SECRET
+        sync: false
+      - key: RECALL_API_KEY
+        sync: false
+      - key: RECALL_WEBHOOK_SECRET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_PUBLIC_ENDPOINT_URL
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: RAZORPAY_PLAN_STARTER_MONTHLY
+        sync: false
+      - key: RAZORPAY_PLAN_STARTER_ANNUAL
+        sync: false
+      - key: RAZORPAY_PLAN_PRO_MONTHLY
+        sync: false
+      - key: RAZORPAY_PLAN_PRO_ANNUAL
+        sync: false
+
+  - type: worker
+    name: inboxos-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Migrate, then run the worker with beat embedded. If the migration fails
+    # the worker does not start, which is the behaviour you want: a worker
+    # running against a schema it does not match corrupts data quietly.
+    dockerCommand: sh -c "alembic upgrade head && celery -A worker.celery_app worker -B --loglevel=info"
+    # Background workers have no free instance type on Render; this is the one
+    # service you must pay for. Without it nothing sweeps and — because booking
+    # notifications are queued rather than sent inline — confirmation emails
+    # are accepted and never delivered.
+    plan: starter
+    region: singapore
+    # Never raise this while beat is embedded above.
+    numInstances: 1
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inboxos-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: inboxos-redis
+          property: connectionString
+      # The worker sends mail and writes booking links, so it needs the same
+      # base URLs the API does.
+      - key: PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: inboxos-api
+          property: host
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: inboxos-api
+          envVarKey: JWT_SECRET
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: COMPOSIO_API_KEY
+        sync: false
+      - key: COMPOSIO_GMAIL_AUTH_CONFIG_ID
+        sync: false
+      - key: COMPOSIO_GCAL_AUTH_CONFIG_ID
+        sync: false
+      - key: RECALL_API_KEY
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_PUBLIC_ENDPOINT_URL
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+
+  - type: redis
+    name: inboxos-redis
+    plan: free
+    region: singapore
+    # Empty list = reachable only from services inside this Render account.
+    ipAllowList: []
+
+databases:
+  - name: inboxos-db
+    databaseName: inboxos
+    user: inboxos_user
+    plan: free
+    region: singapore
+    # The scheduling migration runs CREATE EXTENSION btree_gist for the
+    # double-booking exclusion constraint. Render's Postgres permits it.

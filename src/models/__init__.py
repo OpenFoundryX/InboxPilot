@@ -36,4 +36,5 @@ from models import meetings as meetings  # noqa: F401
 from models import notes as notes  # noqa: F401
 from models import reminders as reminders  # noqa: F401
 from models import routines as routines  # noqa: F401
+from models import scheduling as scheduling  # noqa: F401
 from models import users as users  # noqa: F401

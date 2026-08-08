@@ -47,6 +47,14 @@ beat_schedule: dict = {
         "task": "drafts.follow_up",
         "schedule": 3600.0,
     },
+    # Email guests an hour before a booked meeting, with the link to move it.
+    # Every 5 minutes: the reminder only has to land near its lead time, and
+    # the job's own staleness window (30 min) is what stops a late tick from
+    # sending a reminder after the meeting has begun.
+    "scheduling-reminders": {
+        "task": "scheduling.reminders",
+        "schedule": 300.0,
+    },
     # Enforce per-plan video/transcript retention windows. Daily is frequent
     # enough for windows measured in days, and keeps the job off the same
     # minute as the hot per-minute sweeps.

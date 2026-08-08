@@ -45,3 +45,15 @@ FROM base AS test
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --extra dev
 CMD ["pytest"]
+
+# Production target, and deliberately the LAST stage.
+#
+# `docker build` with no --target builds whichever stage comes last, so while
+# `test` sat here every builder that cannot name a stage — Render's included,
+# its blueprint has no target field — produced an image carrying pytest, ruff
+# and mypy whose CMD was `pytest`. It would have deployed cleanly and served
+# nothing. Compose was immune only because api/worker/beat each pin
+# `target: base` explicitly.
+#
+# Nothing is added on top of `base`; this stage exists to be the default.
+FROM base AS runtime

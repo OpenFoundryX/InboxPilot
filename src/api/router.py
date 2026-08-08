@@ -11,10 +11,12 @@ from api.v1 import (
     drafts,
     integrations,
     mailman,
+    meetings,
     notes,
+    scheduling,
+    scheduling_public,
     users,
     webhooks,
-    meetings
 )
 
 api_router = APIRouter()
@@ -31,3 +33,8 @@ api_router.include_router(meetings.router)
 api_router.include_router(notes.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(billing.router)
+api_router.include_router(scheduling.router)
+# Public before nothing in particular, but kept adjacent to its authenticated
+# half so a reader sees both halves of the feature in one place.
+api_router.include_router(scheduling_public.router)
+api_router.include_router(scheduling_public.manage_router)

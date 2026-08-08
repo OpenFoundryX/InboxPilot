@@ -36,6 +36,10 @@ TASK_MODULES = [
     # nightly dispatch was rejected as an unknown task. Media and transcripts
     # have therefore not actually been pruned.
     "workers.jobs.retention_sweep",
+    # Ditto for `scheduling.reminders`: a beat entry without a line here is a
+    # task the worker has never heard of, which fails silently at dispatch.
+    "workers.jobs.scheduling_reminders",
+    "workers.jobs.scheduling_notify",
     "agents.tasks",
 ]
 

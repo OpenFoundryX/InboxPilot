@@ -8,6 +8,36 @@ from integrations.composio.composio_client import get_composio
 
 EVENTS_LIST = "GOOGLECALENDAR_EVENTS_LIST"
 FIND_FREE_SLOTS = "GOOGLECALENDAR_FIND_FREE_SLOTS"
+CREATE_EVENT = "GOOGLECALENDAR_CREATE_EVENT"
+UPDATE_EVENT = "GOOGLECALENDAR_UPDATE_EVENT"
+DELETE_EVENT = "GOOGLECALENDAR_DELETE_EVENT"
+
+
+def _payload(resp: dict, action: str) -> dict:
+    """The Google object out of a Composio envelope, whichever shape it used.
+
+    Composio is not consistent here. Read actions put the result straight on
+    `data`::
+
+        EVENTS_LIST  -> {"data": {"items": [...]}}
+
+    while the write actions wrap it once more::
+
+        CREATE_EVENT -> {"data": {"response_data": {"id": ..., "hangoutLink": ...}}}
+
+    Reading `data` directly therefore worked for reads and returned an empty
+    dict for writes — so every booking stored a NULL `calendar_event_id`, and
+    because cancel and reschedule are guarded on that id being present, they
+    skipped the calendar without raising anything. A silent no-op, not an error.
+
+    Unwrapping in one place, tolerant of both shapes, is what stops that from
+    depending on which call site remembered.
+    """
+    if resp.get("successful") is False:
+        raise RuntimeError(f"Composio {action} failed: {resp.get('error')}")
+    data = resp.get("data") or {}
+    inner = data.get("response_data")
+    return inner if isinstance(inner, dict) else data
 
 
 def is_connected(user_id: str) -> bool:
@@ -46,17 +76,17 @@ def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[di
         user_id=user_id,
     )
 
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {EVENTS_LIST} failed: {resp.get('error')}")
-
-    data = resp.get("data") or {}
+    data = _payload(resp, EVENTS_LIST)
     return data.get("items") or data.get("events") or []
 
 
 def _event_bounds(ev: dict) -> tuple[datetime, datetime] | None:
-
-    start = ev.get("start").get("dateTime")
-    end = ev.get("end").get("dateTime")
+    # `.get("start")` can legitimately be absent — a cancelled instance in a
+    # recurring series carries only a status — and chaining .get() off that None
+    # used to raise AttributeError. Harmless while this was worker-only code;
+    # not harmless now that an unauthenticated booking page walks the same list.
+    start = (ev.get("start") or {}).get("dateTime")
+    end = (ev.get("end") or {}).get("dateTime")
 
     if not start or not end:
         return None  # all-day events have no dateTime; ignore for overlap
@@ -103,9 +133,7 @@ def _busy_periods(user_id: str, time_min: datetime, time_max: datetime, tz: str)
         user_id=user_id,
     )
 
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {FIND_FREE_SLOTS} failed: {resp.get('error')}")
-    cals = ((resp.get("data") or {}).get("calendars") or {})
+    cals = _payload(resp, FIND_FREE_SLOTS).get("calendars") or {}
     busy = (cals.get("primary") or {}).get("busy") or []
     out = []
     for b in busy:
@@ -162,3 +190,103 @@ def free_slots(
 
 def format_slots(slots: list[tuple[datetime, datetime]]) -> str:
     return "\n".join(f"  • {s.strftime('%a %d %b, %-I:%M %p')} – {e.strftime('%-I:%M %p')}" for s, e in slots)
+
+
+def busy_windows(user_id: str, time_min: datetime, time_max: datetime) -> list[tuple[datetime, datetime]]:
+    """Timed events in the range, as (start, end) pairs. All-day events ignored.
+
+    The public wrapper over `_event_bounds`. Callers outside this module used to
+    reach for the underscore-prefixed helper and reimplement the filter around
+    it; there is exactly one correct way to turn an event list into blocked
+    intervals, so it lives here.
+    """
+    return [
+        bounds
+        for event in list_events(user_id, time_min, time_max)
+        if (bounds := _event_bounds(event))
+    ]
+
+
+def create_event(
+    user_id: str,
+    *,
+    title: str,
+    starts_at: datetime,
+    ends_at: datetime,
+    attendee_emails: list[str],
+    description: str | None = None,
+    send_updates: str = "all",
+) -> dict:
+    """Create a Google Calendar event and request a Meet conference."""
+    resp = get_composio().tools.execute(
+        CREATE_EVENT,
+        {
+            "summary": title,
+            "description": description or "",
+            "start_datetime": starts_at.isoformat(),
+            "end_datetime": ends_at.isoformat(),
+            "attendees": attendee_emails,
+            "create_meeting_room": True,
+            "send_updates": send_updates,
+        },
+        user_id=user_id,
+    )
+    return _payload(resp, CREATE_EVENT)
+
+
+def update_event(
+    user_id: str,
+    event_id: str,
+    *,
+    starts_at: datetime,
+    ends_at: datetime,
+    title: str | None = None,
+    description: str | None = None,
+    attendee_emails: list[str] | None = None,
+) -> dict:
+    """Move an existing event, notifying everyone on it.
+
+    **This replaces the event, it does not patch it.** Any field left out of
+    the payload is cleared rather than preserved, and the field that matters is
+    `attendees`: omitting it removes every guest from the meeting. The host's
+    calendar still shows a confirmed event at the new time, so nothing looks
+    wrong from the side doing the rescheduling — while the guest, who has just
+    been un-invited, sees the meeting vanish.
+
+    Callers must therefore pass the *whole* intended state of the event, not
+    only the parts they are changing.
+    """
+    payload: dict = {
+        "event_id": event_id,
+        "start_datetime": starts_at.isoformat(),
+        "end_datetime": ends_at.isoformat(),
+        "send_updates": "all",
+    }
+    if title is not None:
+        payload["summary"] = title
+    if description is not None:
+        payload["description"] = description
+    if attendee_emails is not None:
+        payload["attendees"] = attendee_emails
+
+    resp = get_composio().tools.execute(UPDATE_EVENT, payload, user_id=user_id)
+    return _payload(resp, UPDATE_EVENT)
+
+
+def delete_event(user_id: str, event_id: str) -> None:
+    """Cancel an event, sending the cancellation to its attendees.
+
+    A already-deleted event is success, not failure: the caller's goal is that
+    the event not be on the calendar, and a retry after a partial cancellation
+    must not fail the whole operation.
+    """
+    resp = get_composio().tools.execute(
+        DELETE_EVENT,
+        {"event_id": event_id, "send_updates": "all"},
+        user_id=user_id,
+    )
+    if resp.get("successful") is False:
+        error = str(resp.get("error") or "")
+        if "410" in error or "404" in error or "not found" in error.lower():
+            return
+        raise RuntimeError(f"Composio {DELETE_EVENT} failed: {error}")

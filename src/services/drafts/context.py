@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import settings as app_settings
 from core.database import run_async, with_worker_session
+from models.scheduling import SchedulingSettings
 from models.users import User
 from models.drafts import (
     PURPOSE_INSTRUCTION,
@@ -95,10 +97,31 @@ class DraftConfig:
     account_email: str | None = None
     instruction_texts: tuple[str, ...] = field(default=())
     knowledge_texts: tuple[str, ...] = field(default=())
+    # The user's public booking link, or None when they have no scheduling
+    # profile or have switched `include_link_in_drafts` off. Present so a reply
+    # about meeting can offer a way to book instead of proposing times the
+    # model would have to invent — see `build_system_prompt`.
+    scheduling_link: str | None = None
 
     def drafts_for(self, category_key: str | None) -> bool:
         """Is this category one the user asked for drafts on?"""
         return bool(category_key) and category_key in self.category_keys
+
+
+async def _scheduling_link(db: AsyncSession, user_id: uuid.UUID) -> str | None:
+    """The user's booking URL, if they have one and want it offered in drafts.
+
+    Read here rather than in the prompt builder so the sync Celery path gets it
+    with the rest of the config, and so "the user switched this off" is
+    expressed as the link being absent — the prompt then has nothing to
+    conditionally suppress.
+    """
+    row = await db.scalar(
+        select(SchedulingSettings).where(SchedulingSettings.user_id == user_id)
+    )
+    if row is None or not row.enabled or not row.include_link_in_drafts:
+        return None
+    return f"{app_settings.FRONTEND_BASE_URL}/schedule/{row.slug}"
 
 
 async def load_config(db: AsyncSession, user_id: uuid.UUID) -> DraftConfig:
@@ -111,6 +134,7 @@ async def load_config(db: AsyncSession, user_id: uuid.UUID) -> DraftConfig:
     account_email = await db.scalar(select(User.email).where(User.id == user_id))
     return DraftConfig(
         account_email=account_email,
+        scheduling_link=await _scheduling_link(db, user_id),
         is_enabled=row.is_enabled,
         category_keys=tuple(row.category_keys or ()),
         selectivity=row.selectivity,
@@ -185,6 +209,15 @@ def build_system_prompt(config: DraftConfig, user_name: str | None = None) -> st
             config.selectivity, SELECTIVITY_GUIDANCE[SELECTIVITY_WHEN_NEEDED]
         ),
     ]
+
+    if config.scheduling_link:
+        parts += [
+            "",
+            "If the reply needs to arrange a meeting, do NOT propose specific times "
+            "— you cannot see the user's calendar and an invented slot is a "
+            "commitment they may not be able to keep. Instead include this booking "
+            f"link and invite the sender to pick a time that suits them: {config.scheduling_link}",
+        ]
 
     if config.custom_instructions:
         parts += [
