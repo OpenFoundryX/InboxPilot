@@ -1,10 +1,9 @@
 """Celery job: onboard a connected Gmail account.
 
-The only non-webhook mail path left. It provisions labels, classifies the mail
-that arrived before the user connected, and installs the trigger that makes
-everything after this webhook-driven. Re-running it is also the manual catch-up
-lever if events were missed — already-labelled mail is skipped, so a second run
-is cheap.
+The only non-polling mail path left. It provisions labels, classifies the mail
+that arrived before the user connected, and seeds the history cursor the poller
+resumes from. Re-running it is also the manual catch-up lever if messages were
+missed — already-labelled mail is skipped, so a second run is cheap.
 """
 
 import uuid
@@ -12,8 +11,9 @@ from datetime import datetime, timezone
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
-from integrations.composio import gmail
-from integrations.composio.triggers import ensure_gmail_new_message_trigger
+from integrations.google import gmail
+from integrations.google.credentials import set_history_id
+from workers.jobs.gmail_poll import install_watch
 from models.categorization import BUILTIN_CATEGORIES
 from models.users import User
 from services.categorization import backfill
@@ -25,7 +25,7 @@ log = get_logger(__name__)
 
 @celery_app.task(name="jobs.sync_last_7_days")
 def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = None) -> dict:
-    """Fetch recent emails for `user_id` (the Composio entity / app user id).
+    """Fetch recent emails for `user_id` (the app user id).
 
     Defaults to the full last-30-days window (paginated). Pass `max_results` to
     cap the fetch. Returns a summary; email bodies are metadata-only.
@@ -46,7 +46,10 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
         label_names = [c.gmail_label for c in BUILTIN_CATEGORIES]
 
     queued = backfill.queue_unlabelled(user_id, emails, label_names)
-    trigger_id, trigger_error = _install_trigger(user_id)
+    history_id, history_error = _seed_history_cursor(user_id)
+    # Order matters: the cursor has to exist before push starts firing, or the
+    # first notification arrives for a mailbox the poller will skip.
+    watching = install_watch(user_id)
     _stamp_initial_sync(user_id)
 
     log.info("gmail.sync_last_7_days", user_id=user_id, days=days, count=len(emails), classified=queued)
@@ -55,18 +58,29 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
         "user_id": user_id,
         "count": len(emails),
         "classified": queued,
-        "trigger": trigger_id,
-        "trigger_error": trigger_error,
+        "history_id": history_id,
+        "history_error": history_error,
+        "watching": watching,
         "emails": [e.model_dump() if hasattr(e, "model_dump") else e for e in emails],
     }
 
 
-def _install_trigger(user_id: str) -> tuple[str | None, str | None]:
-    """Install the Gmail trigger. A failure here means the user gets no mail."""
+def _seed_history_cursor(user_id: str) -> tuple[str | None, str | None]:
+    """Record where the poller should start. Without it, no mail is processed.
+
+    Written only if unset: the connect callback seeds it too, and a re-run of
+    this task must not rewind a cursor that has since moved forward — that would
+    replay every message since, which the event claim would absorb but at real
+    Gmail quota cost.
+    """
     try:
-        return ensure_gmail_new_message_trigger(user_id), None
+        history_id = str(gmail.get_profile(user_id).get("historyId") or "")
+        if not history_id:
+            return None, "no historyId on profile"
+        set_history_id(user_id, history_id, only_if_unset=True)
+        return history_id, None
     except Exception as exc:
-        log.exception("gmail.trigger_install_failed", user_id=user_id)
+        log.exception("gmail.history_seed_failed", user_id=user_id)
         return None, str(exc)
 
 

@@ -1,17 +1,18 @@
-"""Inbound webhooks (Composio triggers, meeting-bot status callbacks, Razorpay).
+"""Inbound webhooks (Gmail push, meeting-bot status callbacks, Razorpay).
 
-The arrival path for all mail. Composio polls Gmail and posts one event per new
-message; we verify it, drop what we've already handled or sent ourselves, and
-hand the work to a Celery task. Nothing here may block: routing decides on the
-payload's `label_ids` alone, and the deeper loop guard (which needs a Gmail
-label lookup) lives inside the command task.
+Gmail's Pub/Sub push arrives here and is the fast path for new mail. It carries
+no message content — only "this mailbox changed" — so it resolves the mailbox to
+a user and hands off to `workers.jobs.gmail_poll`, which is the same task the
+reconciliation sweep runs. Push replaces the timer, not the lookup, and the app
+keeps working with this endpoint unreachable: the sweep still finds everything,
+just later.
 
-The meeting-bot provider posts here too, reporting a bot's progress through a
-call. Same rule: verify, record the status, enqueue the real work.
+The meeting-bot provider posts here, reporting a bot's progress through a call:
+verify, record the status, enqueue the real work.
 
-Razorpay posts subscription lifecycle events here as well. Same rule again:
-verify the signature over the raw body before touching anything, dedupe via
-the same Redis claim, then hand off to `services.billing.webhooks`.
+Razorpay posts subscription lifecycle events here as well. Same rule: verify the
+signature over the raw body before touching anything, dedupe via the Redis
+claim, then hand off to `services.billing.webhooks`.
 """
 
 import json
@@ -19,13 +20,14 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 
 from api.deps import DbSession
-from core.config import settings
-from core.idempotency import claim_event, is_ours
+from core.idempotency import claim_event
 from core.logging import get_logger
-from integrations.composio import triggers as composio_triggers
+from integrations.google import credentials as google_credentials
+from integrations.google import pubsub
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import (
     BOT_DONE,
@@ -45,9 +47,8 @@ from models.meetings import (
     STATUS_RECORDING,
     Meeting,
 )
-from services.billing.webhooks import handle_event, verify_signature
-from workers.jobs.classify_new_email import classify_new_email
-from workers.jobs.handle_command_email import handle_command_email
+from services.billing.webhooks import handle_event
+from workers.jobs.gmail_poll import poll_user
 from workers.jobs.process_meeting import process_meeting
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -65,72 +66,46 @@ _BOT_STATUS_MAP = {
 _TERMINAL_STATUSES = (STATUS_PROCESSED, STATUS_DELIVERED)
 
 
-SENT_LABEL = "SENT"
-SNIPPET_CHARS = 200
+@router.post("/gmail", status_code=status.HTTP_200_OK)
+async def gmail_push(request: Request) -> dict[str, str]:
+    """Gmail's Pub/Sub push: a mailbox changed, go and look.
 
+    The notification carries only an address and a history id — never the
+    messages themselves — so all this does is resolve the mailbox to a user and
+    hand off to the same poll task the reconciliation sweep runs. One code path
+    finds mail, whether a push or a timer woke it.
 
-@router.post("/composio", status_code=status.HTTP_200_OK)
-async def composio_webhook(request: Request) -> dict[str, str]:
-    """Receive Composio trigger events; enqueue work for new Gmail messages."""
+    **Every outcome returns 2xx.** Pub/Sub retries anything else with backoff,
+    so a 4xx for a mailbox we do not recognise would have Google redelivering
+    the same dead notification for days. The only thing worth rejecting is an
+    unverified sender, because accepting those is what lets a stranger spend
+    our Gmail quota.
+    """
     try:
-        result = composio_triggers.parse_webhook(await request.body(), request.headers)
-    except Exception as exc:
-        log.warning("composio.webhook_reject", error=str(exc))
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook") from exc
-
-    event = result.get("payload")
-    if event.get("trigger_slug") != composio_triggers.GMAIL_NEW_MESSAGE:
-        return {"status": "ignored"}
-
-    user_id = event.get("user_id")
-    data = event.get("payload")
-    message_id = data.get("id")
-
-    if not user_id or not message_id:
-        return {"status": "ignored"}
-
-    label_ids = list(data.get("label_ids"))
-    is_command = SENT_LABEL in label_ids
+        pubsub.verify_push_token(request.headers.get("authorization"))
+    except pubsub.InvalidPushNotification as exc:
+        log.warning("gmail.push_unverified", error=str(exc))
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid push") from exc
 
     try:
-        if await is_ours(message_id):
-            log.info("composio.webhook_own_message", user_id=user_id, message_id=message_id)
-            return {"status": "skipped_own"}
-        if not await claim_event(user_id, message_id):
-            return {"status": "duplicate"}
+        notification = pubsub.parse(await request.body())
+    except pubsub.InvalidPushNotification as exc:
+        # Malformed and unretryable: acknowledge so Pub/Sub stops resending it.
+        log.warning("gmail.push_malformed", error=str(exc))
+        return {"status": "ignored"}
 
-    except Exception:
-        log.exception("composio.webhook_guards_unavailable", user_id=user_id, message_id=message_id)
-        if is_command:
-            return {"status": "guards_unavailable"}
-
-    if is_command:
-        handle_command_email.delay(
-            str(user_id),
-            str(message_id),
-            subject=data.get("subject"),
-            body=data.get("message_text"),
-            thread_id=data.get("thread_id"),
-            label_ids=label_ids,
-        )
-        log.info("composio.webhook_command", user_id=user_id, message_id=message_id)
-        return {"status": "command"}
-
-    classify_new_email.delay(
-        str(user_id),
-        str(message_id),
-        sender=data.get("sender"),
-        subject=data.get("subject"),
-        snippet=_snippet(data),
-        thread_id=data.get("thread_id"),
-        # No body and no recipients. Both were carried for auto-drafting, which
-        # used to chain off this task; drafting is scheduled now and reads what
-        # it needs from Gmail itself. Classification only ever wanted the
-        # truncated preview above.
+    user_id = await run_in_threadpool(
+        google_credentials.find_user_id_by_mailbox, notification.email
     )
+    if not user_id:
+        log.info("gmail.push_unknown_mailbox")
+        return {"status": "unknown_mailbox"}
 
-    log.info("composio.webhook_classify", user_id=user_id, message_id=message_id)
-
+    # The poll task holds its own per-user lock and walks from the stored
+    # cursor, so a burst of notifications for one mailbox collapses into one
+    # pass rather than racing.
+    poll_user.delay(user_id)
+    log.info("gmail.push", user_id=user_id, history_id=notification.history_id)
     return {"status": "queued"}
 
 
@@ -222,12 +197,3 @@ async def _find_meeting(db, meeting_id: str | None, bot_id: str) -> Meeting | No
         if found:
             return found
     return await db.scalar(select(Meeting).where(Meeting.bot_id == bot_id))
-
-
-def _snippet(data: dict) -> str | None:
-    """Short preview for the classifier — never the whole body."""
-
-    preview = data.get("preview")
-    text = preview.get("body")
-    text = text or data.get("message_text")
-    return text.strip()[:SNIPPET_CHARS]

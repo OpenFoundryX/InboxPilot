@@ -10,7 +10,7 @@ No LLM involved: nothing is re-classified. It only adds or removes INBOX.
 """
 
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from services.mailman import gmail_ops
 from workers.celery_app import celery_app
 

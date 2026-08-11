@@ -1,6 +1,6 @@
 """Catch what you skipped — scan recent unread and surface what mattered."""
 
-from integrations.composio import gmail
+from integrations.google import gmail
 
 # Order matters: most important first.
 PRIORITY = ["to do", "to follow up", "fyi", "notification"]

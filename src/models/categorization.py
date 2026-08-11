@@ -7,7 +7,7 @@ the LLM is ever called. `categorization_settings` is the per-user singleton of
 tuning knobs.
 
 `BUILTIN_CATEGORIES` lives here rather than in the service layer because
-`integrations.composio.gmail` also needs it to provision Gmail labels, and
+`integrations.google.gmail` also needs it to provision Gmail labels, and
 integrations may not import from services.
 """
 

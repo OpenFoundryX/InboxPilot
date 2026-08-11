@@ -8,7 +8,7 @@ listed in detail; low-value buckets are summarized as counts.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from integrations.composio import gmail
+from integrations.google import gmail
 
 # Buckets shown in full (with sender/subject), in priority order.
 DETAIL_LABELS = ["to do", "to follow up", "fyi", "notification"]

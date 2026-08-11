@@ -1,15 +1,12 @@
-"""Gmail label operations for holding/releasing mail (Composio, blocking).
+"""Gmail label operations for holding/releasing mail (blocking).
 
 Holding a message = pull it out of the inbox by removing the INBOX label and
 adding our holding label (`inboxos-later`). Releasing = the reverse. Call these
 from Celery tasks or a threadpool.
 """
 
-from integrations.composio.composio_client import get_composio
-from integrations.composio.gmail import FETCH_EMAILS, LIST_LABELS
+from integrations.google import gmail
 
-BATCH_MODIFY = "GMAIL_BATCH_MODIFY_MESSAGES"
-MODIFY_THREAD = "GMAIL_MODIFY_THREAD_LABELS"
 INBOX_LABEL = "INBOX"
 UNREAD_LABEL = "UNREAD"
 STARRED_LABEL = "STARRED"
@@ -46,14 +43,16 @@ def resolve_label_id(user_id: str, name: str) -> str | None:
     key = (user_id, name.casefold())
     if hit := _LABEL_ID_CACHE.get(key):
         return hit
-    resp = get_composio().tools.execute(LIST_LABELS, {}, user_id=user_id)
-    if resp.get("successful") is False:
+    try:
+        labels = gmail.list_labels(user_id)
+    except Exception:
         return None
     cache_label_ids(
         user_id,
         {
-            (label.get("name") or "").casefold(): label.get("id")
-            for label in (resp.get("data") or {}).get("labels") or []
+            (label.get("name") or "").casefold(): label_id
+            for label in labels
+            if (label_id := label.get("id"))
         },
     )
     return _LABEL_ID_CACHE.get(key)
@@ -67,13 +66,7 @@ def clear_label_cache() -> None:
 def _modify(user_id: str, message_ids: list[str], add: list[str], remove: list[str]) -> None:
     if not message_ids:
         return
-    resp = get_composio().tools.execute(
-        BATCH_MODIFY,
-        {"messageIds": message_ids, "addLabelIds": add, "removeLabelIds": remove},
-        user_id=user_id,
-    )
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {BATCH_MODIFY} failed: {resp.get('error')}")
+    gmail.batch_modify(user_id, message_ids, add=add, remove=remove)
 
 
 def _modify_thread(user_id: str, thread_id: str, add: list[str], remove: list[str]) -> None:
@@ -84,13 +77,7 @@ def _modify_thread(user_id: str, thread_id: str, add: list[str], remove: list[st
     an older message in the same thread keeps whatever it was given. This is the
     thread-level equivalent of `_modify`, and costs the same single round trip.
     """
-    resp = get_composio().tools.execute(
-        MODIFY_THREAD,
-        {"thread_id": thread_id, "add_label_ids": add, "remove_label_ids": remove},
-        user_id=user_id,
-    )
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {MODIFY_THREAD} failed: {resp.get('error')}")
+    gmail.modify_thread(user_id, thread_id, add=add, remove=remove)
 
 
 def add_label(user_id: str, message_ids: list[str], label_name: str) -> None:
@@ -122,7 +109,7 @@ def apply_category(
     taxonomy_labels: list[str] | None = None,
     thread_id: str | None = None,
 ) -> None:
-    """Apply a category label and its side effects in one Composio round trip.
+    """Apply a category label and its side effects in one Gmail round trip.
 
     `actions` keys are `archive`, `mark_read`, and `star` (see
     `models.categorization.CATEGORY_ACTIONS`). Batching them with the label is
@@ -207,21 +194,16 @@ def release(user_id: str, message_ids: list[str]) -> None:
     _modify(user_id, message_ids, add=[INBOX_LABEL], remove=remove)
 
 
-def list_held_messages(user_id: str, max_results: int = 100) -> list[dict]:
-    """Fetch messages currently held (labeled `inboxos-later`, not in inbox)."""
-    resp = get_composio().tools.execute(
-        FETCH_EMAILS,
-        {"query": f"label:{HOLD_LABEL_NAME}", "max_results": max_results},
-        user_id=user_id,
-    )
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {FETCH_EMAILS} failed: {resp.get('error')}")
-    return (resp.get("data") or {}).get("messages") or []
-
-
 def held_message_ids(user_id: str, max_results: int = 100) -> list[str]:
+    """Ids of messages currently held (labeled `inboxos-later`, not in inbox).
+
+    Deliberately id-only. Releasing a batch needs nothing but the ids, and
+    reading the messages themselves would cost 20 Gmail quota units each — for
+    a hundred held messages, the difference between 5 units and 2,000.
+    """
     return [
-        m.get("messageId")
-        for m in list_held_messages(user_id, max_results)
-        if m.get("messageId")
+        message_id
+        for message_id, _ in gmail.list_message_ids(
+            user_id, f"label:{HOLD_LABEL_NAME}", max_results
+        )
     ]

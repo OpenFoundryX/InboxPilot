@@ -1,32 +1,48 @@
-"""Integration routes (API v1) — Gmail via Composio."""
+"""Integration routes (API v1) — the Google grant behind Gmail and Calendar.
 
+One OAuth grant covers both products. `/google/connect` starts it and
+`/google/callback` stores it; `/gmail/status` and `/calendar/status` remain as
+separate questions with separate answers, because incremental auth means a user
+can hold one scope set and not the other.
+"""
+
+import secrets
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 
+from api.deps import DbSession
 from core.config import settings
 from core.logging import get_logger
-from integrations.composio import calendar, gmail, triggers
-from integrations.composio.triggers import gmail_oauth_callback_url
+from core.redis import redis_client
+from integrations.google import credentials as google_credentials
+from integrations.google import oauth as google_oauth
+from models.google import CALENDAR_REQUIRED_SCOPES, GMAIL_REQUIRED_SCOPES
 from models.users import User
 from schemas.integrations import (
     CalendarConnect,
     CalendarStatus,
     GmailConnect,
     GmailStatus,
+    GoogleConnect,
+    GoogleStatus,
 )
 from services.auth.dependencies import get_current_user
 from workers.jobs.sync_last_7_days import sync_last_7_days
 
 log = get_logger(__name__)
 
-# Composio reports the grant outcome on the return URL; anything else is a
-# failed or abandoned authorisation.
-_GRANT_OK = {"", "success", "active"}
-# Give Composio a moment to finish marking the connection ACTIVE before the
-# worker starts calling Gmail with it.
+# CSRF state for the Google grant. Redis rather than a cookie because the
+# callback lands on PUBLIC_BASE_URL, which the app's session cookie is not
+# scoped to.
+_STATE_PREFIX = "goauth:"
+_STATE_TTL_SECONDS = 600
+
+# Give the stored grant a moment to settle before the worker starts calling
+# Gmail with it.
 _ONBOARD_DELAY_SECONDS = 5
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -39,83 +55,159 @@ async def gmail_status(user: CurrentUser) -> GmailStatus:
     """Whether Gmail is connected, and whether new mail actually reaches us.
 
     `connected` without `listening` is the silent-failure state: the grant is
-    fine, but no trigger exists, so no mail is being processed at all —
-    reconnecting the account re-runs onboarding and reinstalls it.
+    fine, but no history cursor was ever seeded, so the poller skips this
+    mailbox and no mail is processed at all. Reconnecting re-runs onboarding,
+    which seeds it.
     """
-    connection = await run_in_threadpool(gmail.get_active_connection, str(user.id))
-    if not connection:
+    state = await run_in_threadpool(google_credentials.get_connection, str(user.id))
+    if state is None or state.revoked or not GMAIL_REQUIRED_SCOPES <= state.scopes:
         return GmailStatus(connected=False, listening=False)
-
-    listening = await run_in_threadpool(triggers.has_gmail_trigger, connection.id)
-    return GmailStatus(connected=True, listening=listening)
+    return GmailStatus(connected=True, listening=state.history_id is not None)
 
 
 @router.get("/gmail/connect", response_model=GmailConnect)
 async def gmail_connect(user: CurrentUser) -> GmailConnect:
-    """Start the Gmail OAuth grant; returns a URL to send the user to.
+    """Start the grant. Gmail and Calendar are one consent, so this is /google/connect."""
+    return GmailConnect(redirect_url=await _connect_url(user))
 
-    Composio returns the browser to our own callback, which starts onboarding
-    and then forwards to the in-app connect step.
+
+@router.get("/google/connect", response_model=GoogleConnect)
+async def google_connect(user: CurrentUser) -> GoogleConnect:
+    """Start the one grant that covers Gmail and Calendar.
+
+    Replaces connecting the two products separately: the consent screen asks for
+    mail and calendar access together, so a user clicks through once.
     """
-    return_url = gmail_oauth_callback_url(str(user.id))
-    redirect_url = await run_in_threadpool(
-        gmail.initiate_connection, str(user.id), return_url
-    )
-    return GmailConnect(redirect_url=redirect_url)
+    return GoogleConnect(redirect_url=await _connect_url(user))
 
 
-@router.get("/gmail/callback", include_in_schema=False)
-async def gmail_callback(
-    user_id: str = "", status: str = "", connected_account_id: str = ""
+@router.get("/google/callback", include_in_schema=False)
+async def google_callback(
+    db: DbSession, code: str = "", state: str = "", error: str = ""
 ) -> RedirectResponse:
-    """Composio's OAuth return URL — starts onboarding, then returns the user.
+    """Google's OAuth return URL — stores the grant, then starts onboarding.
 
-    This is the only server-side signal that a grant completed, so it is what
-    provisions labels, backfills recent mail, and installs the Gmail trigger.
-    Nothing needs to ask for that work.
+    Unauthenticated by necessity: the browser arrives on the public origin
+    without the app's session cookie. The user is therefore *not* taken from the
+    query string — `state` is a single-use random token this server issued and
+    stored against a user id, so a caller cannot nominate whose account a grant
+    attaches to.
 
-    Unauthenticated by necessity: the browser arrives here on the public origin,
-    without the app's session cookie. `user_id` therefore comes from the query
-    string and is not trusted — onboarding runs only if that user genuinely has
-    a Gmail connection, so a forged id achieves nothing beyond a redundant sync
-    for an already-connected account.
+    The grant's own identity is checked too: Google's picker will happily let
+    someone signed in as one account consent as another, and without this the
+    app would attach a stranger's mailbox to the session and every later call
+    would quietly operate on the wrong inbox.
     """
     landing = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/onboarding/connect"
 
-    if status.lower() not in _GRANT_OK:
-        log.warning("gmail.callback_grant_failed", user_id=user_id, status=status)
-        return RedirectResponse(landing, status_code=302)
+    if error or not code or not state:
+        log.warning("google.callback_declined", error=error or "missing_code")
+        return RedirectResponse(f"{landing}?connected=0", status_code=302)
 
-    connection = (
-        await run_in_threadpool(gmail.get_active_connection, user_id) if user_id else None
-    )
-    if not connection:
-        log.warning("gmail.callback_no_connection", user_id=user_id)
-        return RedirectResponse(landing, status_code=302)
+    # Single-use: pop rather than get, so a replayed callback cannot re-run the
+    # exchange.
+    user_id = await redis_client.getdel(f"{_STATE_PREFIX}{state}")
+    if not user_id:
+        log.warning("google.callback_bad_state")
+        return RedirectResponse(f"{landing}?connected=0", status_code=302)
+
+    try:
+        grant = await run_in_threadpool(google_oauth.exchange_code, code)
+    except Exception:
+        log.exception("google.callback_exchange_failed", user_id=user_id)
+        return RedirectResponse(f"{landing}?connected=0", status_code=302)
+
+    if not await _grant_matches_user(db, user_id, grant.google_sub):
+        log.warning("google.callback_account_mismatch", user_id=user_id)
+        return RedirectResponse(f"{landing}?connected=0&reason=account_mismatch", status_code=302)
+
+    try:
+        await run_in_threadpool(google_credentials.store_grant, user_id, grant)
+    except Exception:
+        # The user did everything right and Google granted everything asked
+        # for; the failure is ours. Saying "try again" would send them round
+        # the same loop forever, so this reports a server fault instead.
+        log.exception("google.callback_store_failed", user_id=user_id)
+        return RedirectResponse(
+            f"{landing}?connected=0&reason=server_error", status_code=302
+        )
 
     sync_last_7_days.apply_async((user_id,), countdown=_ONBOARD_DELAY_SECONDS)
-    log.info(
-        "gmail.onboarding_queued",
-        user_id=user_id,
-        connected_account_id=connected_account_id or getattr(connection, "id", None),
+    log.info("google.connected", user_id=user_id, email=grant.email, scopes=sorted(grant.scopes))
+    return RedirectResponse(f"{landing}?connected=1", status_code=302)
+
+
+@router.get("/google/status", response_model=GoogleStatus)
+async def google_status(user: CurrentUser) -> GoogleStatus:
+    """What the current user's Google grant covers, if anything."""
+    state = await run_in_threadpool(google_credentials.get_connection, str(user.id))
+    if state is None:
+        return GoogleStatus(connected=False)
+
+    if state.revoked:
+        return GoogleStatus(connected=False, needs_reconnect=True, email=state.email)
+
+    return GoogleStatus(
+        connected=True,
+        gmail=GMAIL_REQUIRED_SCOPES <= state.scopes,
+        calendar=CALENDAR_REQUIRED_SCOPES <= state.scopes,
+        listening=state.history_id is not None,
+        email=state.email,
     )
-    return RedirectResponse(landing, status_code=302)
+
+
+@router.post("/google/disconnect", status_code=204)
+async def google_disconnect(user: CurrentUser) -> None:
+    """Forget the grant and ask Google to invalidate it."""
+    state = await run_in_threadpool(google_credentials.get_connection, str(user.id))
+    if state is None:
+        return
+    if state.refresh_token:
+        await run_in_threadpool(google_oauth.revoke, state.refresh_token)
+    await run_in_threadpool(google_credentials.disconnect, str(user.id))
+    log.info("google.disconnected", user_id=str(user.id))
+
+
+async def _grant_matches_user(db: DbSession, user_id: str, google_sub: str) -> bool:
+    """Whether the consenting Google account is the one the user signed in as.
+
+    A user with no `google_sub` cannot be checked — they signed up some other
+    way — so the grant is accepted and its identity becomes the record.
+    """
+    try:
+        found = await db.get(User, uuid.UUID(user_id))
+    except ValueError:
+        return False
+    if found is None:
+        return False
+    return found.google_sub is None or found.google_sub == google_sub
 
 
 @router.get("/calendar/status", response_model=CalendarStatus)
 async def calendar_status(user: CurrentUser) -> CalendarStatus:
-    """Whether the current user has an ACTIVE Composio Google Calendar connection."""
-    connected = await run_in_threadpool(calendar.is_connected, str(user.id))
+    """Whether the user's grant covers Google Calendar."""
+    state = await run_in_threadpool(google_credentials.get_connection, str(user.id))
+    connected = bool(
+        state and not state.revoked and CALENDAR_REQUIRED_SCOPES <= state.scopes
+    )
     return CalendarStatus(connected=connected)
 
 
 @router.get("/calendar/connect", response_model=CalendarConnect)
 async def calendar_connect(user: CurrentUser) -> CalendarConnect:
-    """Start the Google Calendar OAuth grant; returns a URL to send the user to."""
-    return_url = f"{settings.FRONTEND_BASE_URL}/onboarding/connect"
-    redirect_url = await run_in_threadpool(
-        calendar.initiate_connection, str(user.id), return_url
-    )
-    return CalendarConnect(redirect_url=redirect_url)
+    """Start the grant. Calendar and Gmail are one consent, so this is /google/connect."""
+    return CalendarConnect(redirect_url=await _connect_url(user))
+
+
+async def _connect_url(user: User) -> str:
+    """Issue a single-use state token and build the consent URL.
+
+    Shared by all three connect routes: there is exactly one grant, so pointing
+    the older per-product routes at it keeps them working without a second
+    consent screen.
+    """
+    state = secrets.token_urlsafe(32)
+    await redis_client.set(f"{_STATE_PREFIX}{state}", str(user.id), ex=_STATE_TTL_SECONDS)
+    return google_oauth.build_connect_url(state, login_hint=user.email)
 
 

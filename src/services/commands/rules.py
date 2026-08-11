@@ -8,19 +8,14 @@ matching message and apply the same label changes — mirroring Gmail's
 """
 
 from core.logging import get_logger
-from integrations.composio.composio_client import get_composio
+from integrations.google import gmail
 from services.mailman import gmail_ops
 
 log = get_logger(__name__)
 
-CREATE_FILTER = "GMAIL_CREATE_FILTER"
-FETCH_EMAILS = "GMAIL_FETCH_EMAILS"
-BATCH_MODIFY = "GMAIL_BATCH_MODIFY_MESSAGES"
-
-# Safety bounds for the "apply to existing" sweep.
+# Safety bound for the "apply to existing" sweep. Only ids are read, at 5 Gmail
+# quota units per 500, so this stays cheap even at the cap.
 _MAX_MATCHES = 2000
-_PAGE = 100
-_BATCH = 500
 
 
 def _criteria_to_query(criteria: dict) -> str:
@@ -38,26 +33,8 @@ def _criteria_to_query(criteria: dict) -> str:
 
 
 def _matching_ids(user_id: str, query: str, cap: int = _MAX_MATCHES) -> list[str]:
-    """Page through every message matching `query`; return their ids (capped)."""
-    client = get_composio()
-    ids: list[str] = []
-    token: str | None = None
-    while len(ids) < cap:
-        payload: dict = {"query": query, "max_results": _PAGE, "ids_only": True}
-        if token:
-            payload["page_token"] = token
-        resp = client.tools.execute(FETCH_EMAILS, payload, user_id=user_id)
-        if resp.get("successful") is False:
-            break
-        data = resp.get("data") or {}
-        for m in data.get("messages") or []:
-            mid = m.get("messageId") or m.get("id")
-            if mid:
-                ids.append(mid)
-        token = data.get("nextPageToken") or data.get("next_page_token")
-        if not token:
-            break
-    return ids[:cap]
+    """Every message id matching `query` (capped)."""
+    return [message_id for message_id, _ in gmail.list_message_ids(user_id, query, cap)]
 
 
 def _apply_to_existing(
@@ -67,20 +44,11 @@ def _apply_to_existing(
     if not query:
         return 0
     ids = _matching_ids(user_id, query)
-    client = get_composio()
-    applied = 0
-    for i in range(0, len(ids), _BATCH):
-        chunk = ids[i : i + _BATCH]
-        resp = client.tools.execute(
-            BATCH_MODIFY,
-            {"messageIds": chunk, "addLabelIds": add_ids, "removeLabelIds": remove_ids},
-            user_id=user_id,
-        )
-        if resp.get("successful") is False:
-            raise RuntimeError(f"Composio {BATCH_MODIFY} failed: {resp.get('error')}")
-        applied += len(chunk)
-    log.info("commands.rule_applied_existing", user_id=user_id, count=applied)
-    return applied
+    if not ids:
+        return 0
+    gmail.batch_modify(user_id, ids, add=add_ids, remove=remove_ids)
+    log.info("commands.rule_applied_existing", user_id=user_id, count=len(ids))
+    return len(ids)
 
 
 def create_rule(user_id: str, action: dict) -> str:
@@ -128,11 +96,7 @@ def create_rule(user_id: str, action: dict) -> str:
     if remove_ids:
         gmail_action["removeLabelIds"] = remove_ids
 
-    resp = get_composio().tools.execute(
-        CREATE_FILTER, {"criteria": criteria, "action": gmail_action}, user_id=user_id
-    )
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {CREATE_FILTER} failed: {resp.get('error')}")
+    gmail.create_filter(user_id, criteria, gmail_action)
 
     crit_desc = ", ".join(f"{k}={v}" for k, v in criteria.items())
     log.info("commands.rule_created", user_id=user_id, criteria=criteria)

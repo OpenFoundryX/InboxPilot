@@ -2,7 +2,7 @@
 
 Reuses the query planner and multi-query search that already power the
 email-based "Ask anything" flow, so retrieval quality improves in both places
-at once. The Composio calls underneath are blocking, hence the threadpool.
+at once. The Gmail calls underneath are blocking, hence the threadpool.
 """
 
 from fastapi.concurrency import run_in_threadpool
@@ -14,9 +14,10 @@ from services.commands import ask
 
 log = get_logger(__name__)
 
-# Smaller than the email flow's page size: a chat answer wants speed more than
-# exhaustiveness, and the corpus is capped downstream anyway.
-PER_QUERY = 5
+# Slightly smaller than the email flow's page size: a chat answer wants speed
+# more than exhaustiveness. Every planned query still runs and the merged set is
+# still ranked, so this trades breadth per query rather than dropping angles.
+PER_QUERY = 10
 
 
 class EmailRetriever:
@@ -42,24 +43,32 @@ class EmailRetriever:
             )
             return []
 
-        hits = await run_in_threadpool(ask.search_all, user_id, queries, PER_QUERY)
+        hits = await run_in_threadpool(
+            lambda: ask.search_all(user_id, queries, PER_QUERY, question=question)
+        )
+        # Ranked, so the threads worth expanding are the ones at the top.
+        context = await run_in_threadpool(ask.thread_context, user_id, hits)
         log.info(
             "chat.retrieved",
             user_id=user_id,
             queries=queries,
             hits=len(hits),
+            threads_expanded=len(context),
             question=(question or "")[:200],
         )
-        return [self._excerpt(h) for h in hits]
+        return [self._excerpt(h, context) for h in hits]
 
-    def _excerpt(self, hit: EmailSummary) -> Excerpt:
+    def _excerpt(self, hit: EmailSummary, context: dict[str, str]) -> Excerpt:
+        text = (hit.body or hit.snippet or "")[: ask._EXCERPT_CHARS]
+        if earlier := context.get(hit.id or ""):
+            text += f"\n\nEarlier in this thread:\n{earlier}"
         return Excerpt(
             kind=self.kind,
             title=hit.subject,
             sender=hit.sender,
             date=hit.date.isoformat() if hit.date else None,
             link=ask.thread_link(hit.thread_id, self.account_email),
-            text=(hit.body or hit.snippet or "")[:800],
+            text=text,
             ref_id=hit.id,
             thread_id=hit.thread_id,
             attachment_count=len(hit.attachments),

@@ -6,7 +6,7 @@ rewrites a decision the user has already seen.
 """
 
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from services.categorization import backfill
 from services.categorization.pipeline import get_config
 from workers.celery_app import celery_app

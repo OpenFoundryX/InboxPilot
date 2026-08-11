@@ -9,7 +9,7 @@ outgoing mail as a new command.
 
 from core.idempotency import remember_ours
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from services.mailman import gmail_ops
 
 log = get_logger(__name__)

@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 
 from fastapi.concurrency import run_in_threadpool
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionStreamOptionsParam
 
 from core.config import settings
 from core.logging import get_logger
@@ -48,16 +49,24 @@ EV_STAGE = "stage"
 EV_TOKEN = "token"
 EV_SOURCES = "sources"
 EV_ACTIONS = "actions"
+# What the answer actually cost, straight from the provider. Emitted after the
+# last text token, so the client has the full reply before the figure arrives.
+EV_USAGE = "usage"
 
 # How many prior turns are replayed to the answering model.
 HISTORY_TURNS = 6
 
 # Defence-in-depth cap on excerpt body length when rendering the corpus. The
-# `Retriever` protocol (Task 4) makes no promise that sources truncate their
-# text — today's `EmailRetriever` happens to cap at 800 chars already, but a
-# future meeting-notes or Notion retriever could return a full document. This
-# bound keeps a runaway source from ballooning the answer prompt.
-_EXCERPT_TEXT_CAP = 800
+# `Retriever` protocol makes no promise that sources truncate their text, so a
+# future meeting-notes or Notion retriever returning a full document must not be
+# able to balloon the answer prompt.
+#
+# It is a *backstop*, not the working limit, and the difference matters: at 800
+# it was silently re-truncating `EmailRetriever`'s excerpts to a fifth of what
+# they carry, including the thread context appended to them. A cap set at the
+# same value a source happens to use stops being defence-in-depth and starts
+# being the behaviour — so this now sits comfortably above it.
+_EXCERPT_TEXT_CAP = 6000
 
 NOT_CONNECTED_MESSAGE = (
     "I can't read your mail yet — your Gmail account isn't connected. "
@@ -105,19 +114,44 @@ def _client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
-async def _stream_completion(system: str, turns: list[dict], user: str) -> AsyncIterator[str]:
+async def _stream_completion(
+    system: str, turns: list[dict], user: str
+) -> AsyncIterator[tuple[str, dict]]:
+    """Stream one completion as `(event, payload)` pairs.
+
+    Yields events rather than bare text so token usage can ride the same
+    channel. `include_usage` makes the provider send one final chunk carrying
+    exact counts — no local tokenizer to keep in agreement, and no guessing.
+    That chunk has empty `choices`, which is how it is told apart from content.
+    """
+    model = settings.SUMMARY_MODEL
+    # Typed rather than a bare dict so the SDK's overloads resolve.
+    usage_option: ChatCompletionStreamOptionsParam = {"include_usage": True}
     stream = await _client().chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        # Same reasoning as the email "Ask anything" flow: synthesising a
+        # grounded answer across a mailbox is where the cheap model's hedging,
+        # generic prose shows, and it is the only step here worth the upgrade.
+        # Retrieval and intent classification stay on OPENAI_MODEL.
+        model=model,
         temperature=0.3,
         messages=[{"role": "system", "content": system}, *turns, {"role": "user", "content": user}],
         stream=True,
+        stream_options=usage_option,
     )
     async for chunk in stream:
+        if usage := getattr(chunk, "usage", None):
+            yield EV_USAGE, {
+                "model": model,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+            continue
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta.content
         if delta:
-            yield delta
+            yield EV_TOKEN, {"text": delta}
 
 
 def _replayed(history: list[dict]) -> list[dict]:
@@ -151,8 +185,8 @@ def _excerpts_as_corpus(excerpts: list[Excerpt]) -> str:
 
 async def stream_answer(
     message: str, history: list[dict], excerpts: list[Excerpt]
-) -> AsyncIterator[str]:
-    """Yield answer deltas from the model."""
+) -> AsyncIterator[tuple[str, dict]]:
+    """Yield answer events (text deltas, then usage) from the model."""
     if excerpts:
         context = f"\n\nRelevant emails from their inbox:\n{_excerpts_as_corpus(excerpts)}"
     else:
@@ -161,14 +195,16 @@ async def stream_answer(
     stream = _stream_completion(
         _CHAT_ANSWER_SYS, _replayed(history), f"Question: {message}{context}"
     )
-    async for delta in stream:
-        yield delta
+    async for event in stream:
+        yield event
 
 
-async def stream_smalltalk(message: str, history: list[dict]) -> AsyncIterator[str]:
-    """Yield deltas for a message about the assistant itself, mailbox untouched."""
-    async for delta in _stream_completion(_CHAT_SMALLTALK_SYS, _replayed(history), message):
-        yield delta
+async def stream_smalltalk(
+    message: str, history: list[dict]
+) -> AsyncIterator[tuple[str, dict]]:
+    """Yield events for a message about the assistant itself, mailbox untouched."""
+    async for event in _stream_completion(_CHAT_SMALLTALK_SYS, _replayed(history), message):
+        yield event
 
 
 async def _intent(user_id: str, message: str, history: list[dict]) -> Intent:
@@ -283,8 +319,8 @@ async def turn_events(
     intent = await _intent(user_id, message, history)
 
     if intent.kind == INTENT_SMALLTALK:
-        async for delta in stream_smalltalk(message, history):
-            yield EV_TOKEN, {"text": delta}
+        async for event in stream_smalltalk(message, history):
+            yield event
         return
 
     if not gmail_connected:
@@ -307,8 +343,8 @@ async def turn_events(
     yield EV_STAGE, {"label": f"Found {len(excerpts)} {noun}"}
 
     yield EV_STAGE, {"label": "Writing answer"}
-    async for delta in stream_answer(message, history, excerpts):
-        yield EV_TOKEN, {"text": delta}
+    async for event in stream_answer(message, history, excerpts):
+        yield event
 
     if intent.kind == INTENT_COMMAND and intent.command:
         log.info("chat.nudged", user_id=user_id, command=intent.command)

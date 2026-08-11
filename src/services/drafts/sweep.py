@@ -24,7 +24,7 @@ import uuid
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from services.categorization.store import get_or_create_categories
 from services.drafts.context import DraftConfig
 from services.drafts.create import draft_reply

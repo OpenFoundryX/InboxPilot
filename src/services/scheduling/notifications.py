@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from core.config import settings as app_settings
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.scheduling import SchedulingBooking
 
 log = get_logger(__name__)

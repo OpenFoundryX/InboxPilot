@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from models.scheduling import (
     STATUS_CANCELLED,
     STATUS_CONFIRMED,

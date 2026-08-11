@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from core.config import settings
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.reminders import ORIGIN_DEADLINE, Reminder
 
 log = get_logger(__name__)

@@ -1,7 +1,7 @@
 """Calendar routines: a heads-up when meetings collide."""
 
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from services.notify import send_to_inbox
 
 log = get_logger(__name__)

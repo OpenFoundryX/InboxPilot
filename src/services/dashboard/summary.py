@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from models.activity import KIND_DRAFT_CREATED, KIND_EMAIL_CATEGORIZED, ActivityEvent
 from models.meetings import BOT_LOCKED_STATUSES, BOT_OFF_STATUSES, Meeting
 from models.users import User
@@ -58,7 +58,7 @@ def first_name(user: User) -> str:
 
 
 def setup_state(user: User) -> str:
-    """Derived from the DB alone — no Composio round trip on the dashboard path.
+    """Derived from the DB alone — no Gmail round trip on the dashboard path.
 
     DashboardLayout already gates on Gmail and Calendar being connected and
     redirects to /onboarding/connect otherwise, so a request that reaches this
@@ -146,7 +146,7 @@ async def load_agenda(db: AsyncSession, user_id: uuid.UUID, tz_name: str) -> Das
     # summaries, JSONB columns) just to build a dict matching ~2 days of
     # events. Done before the calendar call — not after — so the DB work
     # (including get_or_create_settings' possible first-load INSERT in
-    # build_summary) never spans the blocking Composio round trip below.
+    # build_summary) never spans the blocking Gmail round trip below.
     #
     # Trade-off: a Meeting whose stored starts_at is stale relative to a moved
     # calendar event falls outside this window and renders as "no booking".

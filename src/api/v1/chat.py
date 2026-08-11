@@ -22,7 +22,7 @@ from api.deps import DbSession
 from core.database import SessionLocal
 from core.exceptions import ConflictError, NotFoundError
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.chat import (
     ROLE_ASSISTANT,
     ROLE_USER,

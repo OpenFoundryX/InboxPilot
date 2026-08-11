@@ -13,7 +13,7 @@ thread containing inbound mail" — would exclude the single most common case
 from datetime import UTC, datetime
 
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from schemas.email import EmailSummary
 from services.drafts.context import DraftConfig
 from services.drafts.create import draft_follow_up

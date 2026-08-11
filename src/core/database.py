@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 from sqlalchemy.ext.asyncio import (
@@ -49,6 +50,37 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     different loop".
     """
     return asyncio.run(coro)
+
+
+def run_worker_session(fn: "Callable[[AsyncSession], Coroutine[Any, Any, T]]") -> T:
+    """`with_worker_session(fn)` from synchronous code, in any context.
+
+    `run_async` is `asyncio.run`, which refuses to start when a loop is already
+    running in this thread. That is not a hypothetical: most Celery tasks here
+    are shaped as `run_async(with_worker_session(_handle))`, and `_handle` —
+    already inside a loop — then calls the *synchronous* Gmail and Calendar
+    wrappers. Those wrappers have to load the user's credentials, so the moment
+    that lookup needed the database it began raising
+
+        RuntimeError: asyncio.run() cannot be called from a running event loop
+
+    from deep inside code with no idea it was under a loop at all.
+
+    So: if no loop is running, take the cheap path. If one is, hand the work to
+    a thread that has no loop of its own and block on the result.
+
+    `fn` is passed rather than a coroutine deliberately. Building the coroutine
+    here would create it in *this* thread and, on the threaded path, leave the
+    original un-awaited — the "coroutine was never awaited" warning that
+    accompanied the original failure.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run_async(with_worker_session(fn))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(with_worker_session(fn))).result()
 
 
 async def with_worker_session(fn: "Any") -> T:

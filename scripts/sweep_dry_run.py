@@ -14,7 +14,7 @@ Two levels, cheapest first:
     # where the quota or the ceiling cuts the list off. Still no LLM.
     uv run python scripts/sweep_dry_run.py you@example.com --dry-run
 
-Needs the database and Composio reachable — run it against a real environment
+Needs the database and Gmail reachable — run it against a real environment
 (`make up`, or with the app's `.env` loaded). It never writes anything.
 """
 
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from sqlalchemy import select  # noqa: E402
 
 from core.database import run_async, with_worker_session  # noqa: E402
-from integrations.composio import gmail  # noqa: E402
+from integrations.google import gmail  # noqa: E402
 from models.users import User  # noqa: E402
 from services.categorization.store import get_or_create_categories  # noqa: E402
 from services.drafts import sweep  # noqa: E402

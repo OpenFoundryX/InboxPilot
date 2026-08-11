@@ -40,6 +40,11 @@ TASK_MODULES = [
     # task the worker has never heard of, which fails silently at dispatch.
     "workers.jobs.scheduling_reminders",
     "workers.jobs.scheduling_notify",
+    # The mail arrival path. `gmail.poll_all` and `gmail.renew_watches` are beat
+    # entries and `gmail.poll_user` is dispatched by both the sweep and the push
+    # webhook, so this module has to be registered or new mail simply stops being
+    # processed — with nothing in the logs but a rejected task.
+    "workers.jobs.gmail_poll",
     "agents.tasks",
 ]
 

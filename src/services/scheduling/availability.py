@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
 from core.redis import redis_client
-from integrations.composio import calendar
+from integrations.google import calendar
 from models.scheduling import SchedulingEventType, SchedulingSettings
 from services.scheduling import store
 from services.scheduling.slots import Interval, available_slots, timezone_for, windows_for

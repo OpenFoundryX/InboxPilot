@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from core.database import run_async, with_worker_session
 from core.locks import single_run
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
 from models.meetings import (

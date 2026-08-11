@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from core.config import settings
 from core.logging import get_logger
-from integrations.composio import calendar, gmail
+from integrations.google import calendar, gmail
 from models.mailman import VipRule
 from services.activity.record import record_draft_created
 from services.billing.usage import add_drafts

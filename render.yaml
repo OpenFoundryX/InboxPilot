@@ -69,11 +69,11 @@ services:
           property: connectionString
 
       # Both of these have defaults that fail silently rather than loudly.
-      # PUBLIC_BASE_URL still points at an expired ngrok tunnel, which is where
-      # Composio would register the Gmail webhook; FRONTEND_BASE_URL still says
-      # localhost:3000, which is what every booking confirmation email would
-      # tell a guest to click. Set from this service's own URL, and to the
-      # Vercel domain, respectively.
+      # PUBLIC_BASE_URL is where Google returns the browser after consent, and
+      # must match the authorised redirect URI in the Cloud console exactly;
+      # FRONTEND_BASE_URL defaults to localhost:3000, which is what every
+      # booking confirmation email would tell a guest to click. Set from this
+      # service's own URL, and to the Vercel domain, respectively.
       - key: PUBLIC_BASE_URL
         fromService:
           type: web
@@ -99,15 +99,21 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: COMPOSIO_API_KEY
+      # Encrypts the Google OAuth tokens at rest. Blank means nobody can
+      # connect an account.
+      - key: GOOGLE_TOKEN_ENCRYPTION_KEYS
         sync: false
-      - key: COMPOSIO_GMAIL_AUTH_CONFIG_ID
+      # How mail arrives: push is the fast path, the poll is the safety net
+      # that covers dropped notifications and lapsed watches. Both off means
+      # no mail is processed at all.
+      - key: GMAIL_POLL_ENABLED
+        value: "true"
+      - key: GMAIL_PUSH_ENABLED
+        value: "true"
+      - key: GOOGLE_PUBSUB_TOPIC
         sync: false
-      - key: COMPOSIO_GCAL_AUTH_CONFIG_ID
-        sync: false
-      - key: COMPOSIO_GMAIL_CALLBACK_URL
-        sync: false
-      - key: COMPOSIO_WEBHOOK_SECRET
+      # Blank leaves the push endpoint unverified.
+      - key: GOOGLE_PUBSUB_SA_EMAIL
         sync: false
       - key: RECALL_API_KEY
         sync: false
@@ -200,11 +206,21 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: COMPOSIO_API_KEY
+      # Encrypts the Google OAuth tokens at rest. Blank means nobody can
+      # connect an account.
+      - key: GOOGLE_TOKEN_ENCRYPTION_KEYS
         sync: false
-      - key: COMPOSIO_GMAIL_AUTH_CONFIG_ID
+      # How mail arrives: push is the fast path, the poll is the safety net
+      # that covers dropped notifications and lapsed watches. Both off means
+      # no mail is processed at all.
+      - key: GMAIL_POLL_ENABLED
+        value: "true"
+      - key: GMAIL_PUSH_ENABLED
+        value: "true"
+      - key: GOOGLE_PUBSUB_TOPIC
         sync: false
-      - key: COMPOSIO_GCAL_AUTH_CONFIG_ID
+      # Blank leaves the push endpoint unverified.
+      - key: GOOGLE_PUBSUB_SA_EMAIL
         sync: false
       - key: RECALL_API_KEY
         sync: false

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from integrations.meetingbot import get_provider
 from integrations.meetingbot.base import MeetingBotError
 from integrations.storage.base import StorageError

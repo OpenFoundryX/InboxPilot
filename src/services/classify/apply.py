@@ -2,13 +2,13 @@
 
 The single implementation shared by the webhook task (mail arriving now) and the
 onboarding backfill (mail that arrived before the user connected). Blocking
-Composio + OpenAI calls — invoke from a Celery task.
+Gmail + OpenAI calls — invoke from a Celery task.
 """
 
 from functools import lru_cache
 
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from services.categorization import pipeline
 
 log = get_logger(__name__)

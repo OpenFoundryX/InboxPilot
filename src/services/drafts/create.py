@@ -30,7 +30,7 @@ from functools import lru_cache
 
 from core.database import run_async, with_worker_session
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.drafts import KIND_FOLLOW_UP, KIND_REPLY
 from services.activity.record import record_draft_created
 from services.billing.entitlements import FEATURE_DRAFT, Decision, check

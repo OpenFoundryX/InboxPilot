@@ -1,6 +1,6 @@
 """Execute parsed command actions against InboxPilot's services.
 
-Each handler is sync/blocking (Composio + a SQLAlchemy session passed in) and
+Each handler is sync/blocking (Gmail + a SQLAlchemy session passed in) and
 returns a short human-readable result line for the confirmation email. Handlers
 raise on failure; the caller turns that into a "failed: ..." line.
 """
@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from datetime import datetime, timezone
 
 from models.mailman import MODE_CUSTOM_DAILY, MODE_INTERVAL, MODE_TIMES
@@ -104,7 +104,7 @@ def _subtract(existing: list, incoming: list | None) -> list:
 
 
 async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
-    """Run one action. `uid` is the app user id == Composio user_id."""
+    """Run one action. `uid` is the app user id."""
     user_id = str(uid)
     atype = action.get("type")
 

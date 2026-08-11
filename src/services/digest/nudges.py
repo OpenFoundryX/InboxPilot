@@ -1,8 +1,8 @@
 """Follow-up nudges: threads where you're the last sender (awaiting a reply)."""
 
 from core.logging import get_logger
-from integrations.composio import gmail
-from integrations.composio.composio_client import get_composio
+from integrations.google import gmail
+from integrations.google.mime import headers
 from services.mailman import gmail_ops
 from services.notify import send_to_inbox
 
@@ -12,11 +12,17 @@ FOLLOW_UP_LABEL = "to follow up"
 
 
 def _last_sender(user_id: str, thread_id: str) -> str | None:
-    resp = get_composio().tools.execute(
-        "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {"thread_id": thread_id}, user_id=user_id
-    )
-    msgs = (resp.get("data") or {}).get("messages") or []
-    return (msgs[-1].get("sender") if msgs else None)
+    """Who sent the most recent message in a thread.
+
+    Metadata format, requesting only `From`: this runs once per thread across a
+    whole sweep, and pulling full bodies to read one header would be the
+    expensive way to answer the question.
+    """
+    thread = gmail.get_thread(user_id, thread_id, metadata_headers=["From"])
+    messages = thread.get("messages") or []
+    if not messages:
+        return None
+    return headers(messages[-1].get("payload") or {}).get("from")
 
 
 def chase_open_threads(user_id: str, email: str, self_email: str) -> int:

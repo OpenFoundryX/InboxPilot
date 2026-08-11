@@ -16,7 +16,7 @@ import uuid
 from core.database import run_async, with_worker_session
 from core.idempotency import allow_reply, remember_ours
 from core.logging import get_logger
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.users import User
 from services.commands import handlers
 from services.commands.ask import answer_question

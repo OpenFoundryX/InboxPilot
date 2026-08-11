@@ -15,7 +15,7 @@ from core.logging import get_logger
 
 log = get_logger(__name__)
 
-# Composio and the LLM are the expensive parts of drafting; a huge upload only
+# Gmail and the LLM are the expensive parts of drafting; a huge upload only
 # costs parse time, so the ceiling here is about protecting the request, not the
 # storage. 10 MB comfortably covers a long PDF handbook.
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024

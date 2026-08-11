@@ -10,15 +10,11 @@ from fastapi import status
 
 from core.exceptions import AppError
 from core.logging import get_logger
-from integrations.composio import gmail
-from integrations.composio.composio_client import get_composio
+from integrations.google import gmail
+from integrations.google.client import GoogleAPIError
 from services.mailman import gmail_ops
 
 log = get_logger(__name__)
-
-CREATE_FILTER = "GMAIL_CREATE_FILTER"
-DELETE_FILTER = "GMAIL_DELETE_FILTER"
-LIST_FILTERS = "GMAIL_LIST_FILTERS"
 
 # Matches everything the user *receives* (i.e. not sent by them). Gmail filters
 # need at least one criteria field; this is our catch-all.
@@ -52,7 +48,7 @@ def apply_hold_filter(
 ) -> str:
     """Install/replace the skip-inbox filter. Returns the new Gmail filter id.
 
-    Blocking Composio calls — invoke from a Celery task or a threadpool.
+    Blocking Gmail calls — invoke from a Celery task or a threadpool.
     """
     if existing_filter_id:
         try:
@@ -67,7 +63,7 @@ def apply_hold_filter(
 
     # ensure_labels already listed (and created) every label, so it knows the
     # hold label's id — take it from there rather than spending another
-    # LIST_LABELS round trip on Composio, and warm the shared cache while we
+    # labels.list round trip, and warm the shared cache while we
     # have the authoritative ids in hand.
     sync = gmail.ensure_labels(user_id)
     gmail_ops.cache_label_ids(user_id, sync.ids)
@@ -120,13 +116,11 @@ def create_hold_filter(
 
     action = {"removeLabelIds": ["INBOX"], "addLabelIds": [hold_label_id]}
 
-    resp = get_composio().tools.execute(
-        CREATE_FILTER, {"criteria": criteria, "action": action}, user_id=user_id
-    )
-    if resp.get("successful") is False:
-        error = resp.get("error")
+    try:
+        created = gmail.create_filter(user_id, criteria, action)
+    except GoogleAPIError as error:
         if not _is_already_exists(error):
-            raise RuntimeError(f"Composio {CREATE_FILTER} failed: {error}")
+            raise RuntimeError(f"Gmail filter create failed: {error}") from error
 
         # Gmail refuses a byte-identical filter instead of returning the one it
         # already has. We land here whenever the stored id has drifted from
@@ -142,14 +136,13 @@ def create_hold_filter(
         existing = find_hold_filter(user_id, hold_label_id, criteria)
         if existing is None:
             raise RuntimeError(
-                f"Composio {CREATE_FILTER} reported the filter already exists, "
-                f"but no live filter matches it: {error}"
-            )
+                f"Gmail reported the filter already exists, but no live filter "
+                f"matches it: {error}"
+            ) from error
         log.info("mailman.hold_filter_adopted", user_id=user_id, filter_id=existing)
         return existing
 
-    data = resp.get("data") or {}
-    filter_id = data.get("id") or (data.get("response_data") or {}).get("id")
+    filter_id = created.get("id")
     log.info("mailman.hold_filter_created", user_id=user_id, filter_id=filter_id)
     return filter_id
 
@@ -157,8 +150,8 @@ def create_hold_filter(
 def _is_already_exists(error: object) -> bool:
     """True for Gmail's 400 FAILED_PRECONDITION "Filter already exists".
 
-    Composio hands the error back as the raw Google error dict rather than a
-    typed failure, so matching on its text is the only handle we have.
+    Google returns this as a message rather than a distinguishable code, so
+    matching on its text is the only handle available.
     """
     lowered = str(error or "").casefold()
     return "already exists" in lowered or "failed_precondition" in lowered
@@ -166,16 +159,7 @@ def _is_already_exists(error: object) -> bool:
 
 def find_hold_filter(user_id: str, hold_label_id: str, criteria: dict) -> str | None:
     """Find the live hold filter matching `criteria`; return its id, or None."""
-    resp = get_composio().tools.execute(LIST_FILTERS, {}, user_id=user_id)
-    if resp.get("successful") is False:
-        raise RuntimeError(f"Composio {LIST_FILTERS} failed: {resp.get('error')}")
-
-    data = resp.get("data") or {}
-    # Gmail names the array "filter", singular, and Composio sometimes nests
-    # the payload a level deeper.
-    rows = data.get("filter") or (data.get("response_data") or {}).get("filter") or []
-
-    for row in rows:
+    for row in gmail.list_filters(user_id):
         act = row.get("action") or {}
         if hold_label_id not in (act.get("addLabelIds") or []):
             continue
@@ -192,7 +176,5 @@ def find_hold_filter(user_id: str, hold_label_id: str, criteria: dict) -> str | 
 def delete_filter(user_id: str, filter_id: str) -> None:
     if not filter_id:
         return
-    get_composio().tools.execute(
-        DELETE_FILTER, {"filter_id": filter_id}, user_id=user_id
-    )
+    gmail.delete_filter(user_id, filter_id)
     log.info("mailman.hold_filter_deleted", user_id=user_id, filter_id=filter_id)

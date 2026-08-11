@@ -7,7 +7,7 @@ not. This module defines the whole surface of what we buy, so a second provider
 nothing above `integrations/` knows which vendor is in play.
 
 Provider calls are blocking; call them from Celery workers, or via
-`run_in_threadpool` from the API, matching the Composio integrations.
+`run_in_threadpool` from the API, matching the Google integrations.
 """
 
 from dataclasses import dataclass, field

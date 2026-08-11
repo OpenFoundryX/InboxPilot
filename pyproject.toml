@@ -14,11 +14,17 @@ dependencies = [
     "alembic>=1.14",
     "celery[redis]>=5.4",
     "redis>=5.2",
-    "composio>=0.7",
     "openai>=1.54",
+    # Prompt-size estimation before a call. Actual spend is read from the API's
+    # own `usage` field; this is only for budgeting a corpus in advance.
+    "tiktoken>=0.8",
     "httpx>=0.28",
     "google-auth[requests]>=2.35",
     "python-jose[cryptography]>=3.3",
+    # Fernet, for the OAuth tokens in `google_connections`. Direct rather than
+    # inherited through python-jose's extra: token-at-rest encryption should not
+    # break because an unrelated jose bump reshuffles its optional deps.
+    "cryptography>=43",
     "passlib[bcrypt]>=1.7",
     "structlog>=24.4",
     # Text extraction for draft instruction/knowledge uploads. Only the text is

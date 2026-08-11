@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 
 from api.deps import DbSession
 from core.logging import get_logger
-from integrations.composio import calendar
+from integrations.google import calendar
 from models.scheduling import (
     LIVE_STATUSES,
     SchedulingBooking,

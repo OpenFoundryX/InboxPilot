@@ -53,8 +53,8 @@ Setup:
 2. In the Recall dashboard, point the workspace webhook at
    `$PUBLIC_BASE_URL/v1/webhooks/meeting-bot` and copy the signing secret into
    `RECALL_WEBHOOK_SECRET`.
-3. Connect Google Calendar (`/v1/integrations/calendar/connect`) — the same
-   Composio grant the rest of the app uses.
+3. Connect Google (`/v1/integrations/google/connect`) — one grant covers Gmail
+   and Calendar, and it is the same one the rest of the app uses.
 4. `PUT /v1/meetings/settings` with `{"auto_join": true}`. It defaults **off**:
    recording other people is the user's call to make deliberately.
 

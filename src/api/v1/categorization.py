@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import DbSession
 from core.config import settings as app_settings
-from integrations.composio import gmail
+from integrations.google import gmail
 from models.categorization import (
     RULE_ASSIGN,
     CategorizationRule,
@@ -215,7 +215,7 @@ async def create_category(
 
     The Gmail label is created before the row is committed: a category whose
     label does not exist would fail every classification that picked it, so the
-    Composio failure has to surface here rather than in a worker.
+    A Gmail failure has to surface here rather than in a worker.
     """
     await _require_custom_categories(db, user)
     existing = await get_or_create_categories(db, user.id)

@@ -34,6 +34,40 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:3000/api/auth/google/callback"
     POST_LOGIN_REDIRECT_URL: str = "http://localhost:3000/onboarding/connect"
 
+    # Comma-separated Fernet keys for the OAuth tokens in `google_connections`.
+    # The first encrypts, all of them decrypt — see `core.crypto` for why the
+    # list is what makes key rotation a no-op rather than a data migration.
+    GOOGLE_TOKEN_ENCRYPTION_KEYS: str = ""
+
+    # Gmail's per-user quota is 6,000 units/minute and a messages.get costs 20,
+    # so the ceiling is ~300 message fetches per user per minute. Five parallel
+    # gets is a reasonable fraction of that while still collapsing a 25-message
+    # page from 25 sequential round trips into 5 waves.
+    GMAIL_FETCH_CONCURRENCY: int = 5
+    GOOGLE_HTTP_TIMEOUT: float = 30.0
+
+    # The reconciliation poll. With push enabled this is the safety net rather
+    # than the delivery path — it catches dropped notifications and lapsed
+    # watches. With push disabled it is the ONLY way mail arrives, so turning
+    # both off means nothing is classified, no slash command runs, and no draft
+    # is written.
+    GMAIL_POLL_ENABLED: bool = False
+
+    # Gmail push. `users.watch` publishes mailbox changes to a Pub/Sub topic,
+    # which pushes to /v1/webhooks/gmail — seconds instead of a poll interval.
+    # Topic form: projects/<project>/topics/<topic>
+    GMAIL_PUSH_ENABLED: bool = False
+    GOOGLE_PUBSUB_TOPIC: str = ""
+    # Service account in the push subscription's OIDC token. Blank disables
+    # verification, which leaves the endpoint open to anyone who finds it —
+    # they could not read mail, but they could make the app burn Gmail quota.
+    # Set it in production.
+    GOOGLE_PUBSUB_SA_EMAIL: str = ""
+    # `audience` configured on the push subscription. Blank means accept
+    # whatever audience the token carries, having already checked the issuer
+    # and service account.
+    GOOGLE_PUBSUB_AUDIENCE: str = ""
+
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
     DATABASE_URL: str = "postgresql+asyncpg://inboxos_user:inboxos_password@db:5432/inboxos"
@@ -81,14 +115,10 @@ class Settings(BaseSettings):
     COMMANDS_LOOKBACK: str = "newer_than:2d"
     COMMANDS_MAX_PER_SWEEP: int = 10
 
-    COMPOSIO_API_KEY: str = ""
-    COMPOSIO_GMAIL_AUTH_CONFIG_ID: str = ""
-    COMPOSIO_GMAIL_TOOLKIT_VERSION: str = "20260702_01"
-    COMPOSIO_GCAL_AUTH_CONFIG_ID: str = ""
-    COMPOSIO_GCAL_TOOLKIT_VERSION: str = "20260721_00"
-    COMPOSIO_WEBHOOK_SECRET: str = ""
-
-    PUBLIC_BASE_URL: str = "https://9d57-2401-4900-8813-6c30-87f-f481-54a0-d6e6.ngrok-free.app"
+    # Where *this API* is reachable from. Mail no longer depends on it — the
+    # worker polls Gmail outbound — but Google's OAuth callback still lands
+    # here, so it must match the redirect URI registered in the Cloud console.
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
     MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
 
 
