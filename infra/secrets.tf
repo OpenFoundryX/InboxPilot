@@ -33,20 +33,39 @@ locals {
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_TOKEN_ENCRYPTION_KEYS",
     "GOOGLE_PUBSUB_TOPIC",
-    "GOOGLE_PUBSUB_SA_EMAIL",
-    "GOOGLE_PUBSUB_AUDIENCE",
-    "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "RECALL_API_KEY",
     "RECALL_WEBHOOK_SECRET",
     "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
-    "RAZORPAY_WEBHOOK_SECRET",
     "RAZORPAY_PLAN_STARTER_MONTHLY",
     "RAZORPAY_PLAN_STARTER_ANNUAL",
     "RAZORPAY_PLAN_PRO_MONTHLY",
     "RAZORPAY_PLAN_PRO_ANNUAL",
   ]
+
+  # Deliberately NOT delivered to containers. Every field in core.config has a
+  # default, so an absent parameter means the feature is off — not a crash. Add
+  # a name to the list above AND to KEYS in scripts/push-secrets.sh once a value
+  # exists; nothing else needs to change.
+  #
+  #   GOOGLE_PUBSUB_SA_EMAIL   The Gmail push endpoint accepts unauthenticated
+  #                            requests without it, which lets anyone who finds
+  #                            the URL spend Gmail quota. main.py:51 logs
+  #                            "gmail.push_unverified" on every boot as a
+  #                            reminder. GMAIL_POLL_ENABLED is on, so mail still
+  #                            arrives via the poll either way.
+  #
+  #   GOOGLE_PUBSUB_AUDIENCE   Optional extra claim check on the push token.
+  #
+  #   ANTHROPIC_API_KEY        Unused while CLASSIFIER_MODELS is gpt-*.
+  #
+  #   RAZORPAY_WEBHOOK_SECRET  Currently unused by the app regardless: the
+  #                            signature check at api/v1/webhooks.py:174 is
+  #                            commented out, so the Razorpay webhook is
+  #                            unverified whether or not this is set. Setting
+  #                            this parameter does NOT fix that — uncommenting
+  #                            that check does.
 }
 
 data "aws_ssm_parameter" "operator" {

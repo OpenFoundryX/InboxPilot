@@ -5,6 +5,6 @@
 #                 trailing slash, or browser uploads fail the S3 CORS check.
 # github_repo     scopes the OIDC deploy role; without it any repo could assume it.
 
-api_domain      = "api.example.com"
-frontend_origin = "https://app.example.com"
-github_repo     = "owner/InboxPilot"
+api_domain      = "api.inboxoshq.com"
+frontend_origin = "https://inboxoshq.com"
+github_repo     = "OpenFoundryX/InboxPilot"
