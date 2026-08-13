@@ -78,13 +78,17 @@ jobs:
             --task-definition "${CLUSTER}-migrate" \
             --query 'taskDefinition' --output json)
 
-          NEW_TD=$(echo "$TD" | jq --arg IMAGE "$IMAGE" '
+          # Write to a real file rather than piping to file:///dev/stdin. The
+          # CLI needs a seekable input and a pipe is not one, so the stdin form
+          # fails with "Error parsing parameter 'cli-input-json': Invalid JSON
+          # received" even when the JSON is perfectly valid.
+          echo "$TD" | jq --arg IMAGE "$IMAGE" '
             .containerDefinitions[0].image = $IMAGE
             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                  .compatibilities, .registeredAt, .registeredBy)')
+                  .compatibilities, .registeredAt, .registeredBy)' > migrate-td.json
 
-          MIGRATE_ARN=$(echo "$NEW_TD" | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          MIGRATE_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://migrate-td.json \
             --query 'taskDefinition.taskDefinitionArn' --output text)
 
           TASK_ARN=$(aws ecs run-task \
@@ -119,13 +123,15 @@ jobs:
               --task-definition "${CLUSTER}-${ROLE}" \
               --query 'taskDefinition' --output json)
 
-            NEW_TD=$(echo "$TD" | jq --arg IMAGE "$IMAGE" '
+            # A real file, not file:///dev/stdin — see the note in the migrate
+            # step above.
+            echo "$TD" | jq --arg IMAGE "$IMAGE" '
               .containerDefinitions[0].image = $IMAGE
               | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                    .compatibilities, .registeredAt, .registeredBy)')
+                    .compatibilities, .registeredAt, .registeredBy)' > "${ROLE}-td.json"
 
-            ARN=$(echo "$NEW_TD" | aws ecs register-task-definition \
-              --cli-input-json file:///dev/stdin \
+            ARN=$(aws ecs register-task-definition \
+              --cli-input-json "file://${ROLE}-td.json" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
 
             aws ecs update-service \
