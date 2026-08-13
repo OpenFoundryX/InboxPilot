@@ -129,8 +129,9 @@ silent — mail simply stops being processed, with nothing in the logs.
 
 Also point the Vercel frontend's API base URL at `https://api.yourdomain.com`.
 
-> Verify the exact webhook paths against `src/api/` before pasting them; the
-> table records the routes as of this runbook's writing.
+Paths verified against `src/api/v1/webhooks.py` (`/gmail`, `/meeting-bot`,
+`/razorpay` under the router's `/webhooks` prefix), `src/api/v1/auth.py`
+(`/google/callback`), and `API_V1_PREFIX = "/v1"` in `src/core/config.py`.
 
 ## Verification
 
