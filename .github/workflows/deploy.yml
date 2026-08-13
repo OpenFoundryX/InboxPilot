@@ -1,0 +1,151 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Two deploys at once would race on the migrate task and on service updates.
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+  CLUSTER: inboxpilot
+  ECR_REPO: inboxpilot
+
+permissions:
+  contents: read
+  id-token: write # required to request the OIDC token
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ARM64 to match runtime_platform on every task definition. A mismatch
+      # produces a task that dies immediately with "exec format error".
+      #
+      # No --target: the Dockerfile's LAST stage is `runtime`, deliberately, so
+      # a builder that cannot name a stage never picks up the `test` stage and
+      # ships an image whose CMD is pytest.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run migrations
+        run: |
+          set -euo pipefail
+
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}"
+
+          SUBNETS=$(aws ecs describe-services \
+            --cluster "$CLUSTER" --services "${CLUSTER}-api" \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration.subnets' \
+            --output text | tr '\t' ',')
+          SG=$(aws ecs describe-services \
+            --cluster "$CLUSTER" --services "${CLUSTER}-api" \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration.securityGroups[0]' \
+            --output text)
+
+          # Register a migrate revision pinned to this build's image.
+          TD=$(aws ecs describe-task-definition \
+            --task-definition "${CLUSTER}-migrate" \
+            --query 'taskDefinition' --output json)
+
+          NEW_TD=$(echo "$TD" | jq --arg IMAGE "$IMAGE" '
+            .containerDefinitions[0].image = $IMAGE
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)')
+
+          MIGRATE_ARN=$(echo "$NEW_TD" | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$MIGRATE_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "migrate task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          echo "migrate exited: $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration failed. Services were NOT updated."
+            echo "Logs: /ecs/${CLUSTER}/migrate"
+            exit 1
+          fi
+
+      - name: Deploy services
+        run: |
+          set -euo pipefail
+
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}"
+
+          for ROLE in api worker; do
+            TD=$(aws ecs describe-task-definition \
+              --task-definition "${CLUSTER}-${ROLE}" \
+              --query 'taskDefinition' --output json)
+
+            NEW_TD=$(echo "$TD" | jq --arg IMAGE "$IMAGE" '
+              .containerDefinitions[0].image = $IMAGE
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy)')
+
+            ARN=$(echo "$NEW_TD" | aws ecs register-task-definition \
+              --cli-input-json file:///dev/stdin \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+
+            aws ecs update-service \
+              --cluster "$CLUSTER" \
+              --service "${CLUSTER}-${ROLE}" \
+              --task-definition "$ARN" >/dev/null
+
+            echo "${ROLE} -> ${ARN}"
+          done
+
+      - name: Wait for services to stabilise
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "${CLUSTER}-api" "${CLUSTER}-worker"
+
+      - name: Verify health through the ALB
+        run: |
+          set -euo pipefail
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "https://${{ secrets.API_DOMAIN }}/health")
+          echo "GET /health -> $CODE"
+          [ "$CODE" = "200" ]
