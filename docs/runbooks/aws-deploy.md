@@ -144,7 +144,7 @@ silent — mail simply stops being processed, with nothing in the logs.
 
 | Where | What |
 |---|---|
-| Google Cloud console → OAuth client | Authorised redirect URI → `https://api.yourdomain.com/v1/auth/google/callback` |
+| Google Cloud console → OAuth client | Authorised redirect URI → `https://yourdomain.com/api/auth/google/callback` — the **frontend**, not the API. The Next app owns that route and proxies it back; `core.config` defaults to `localhost:3000/api/auth/google/callback` for the same reason. Pointing this at the API gives `redirect_uri_mismatch` at the last step of consent. |
 | Google Cloud console → Pub/Sub subscription | Push endpoint → `https://api.yourdomain.com/v1/webhooks/gmail` |
 | Recall dashboard → workspace webhook | `https://api.yourdomain.com/v1/webhooks/meeting-bot` |
 | Razorpay dashboard → webhooks | `https://api.yourdomain.com/v1/webhooks/razorpay` |

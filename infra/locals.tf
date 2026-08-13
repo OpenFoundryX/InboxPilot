@@ -20,6 +20,14 @@ locals {
     aws_db_instance.main.db_name,
   )
 
+  # Both point at the FRONTEND, not the API — the Next app owns
+  # /api/auth/google/callback and proxies it back. core.config defaults to
+  # localhost:3000 for exactly this reason. Deriving these from api_domain
+  # instead sends Google to a path the API does not serve, and consent fails at
+  # the last step with redirect_uri_mismatch.
+  google_redirect_uri     = var.google_redirect_uri != "" ? var.google_redirect_uri : "${var.frontend_origin}/api/auth/google/callback"
+  post_login_redirect_url = var.post_login_redirect_url != "" ? var.post_login_redirect_url : "${var.frontend_origin}/onboarding/connect"
+
   redis_host = aws_elasticache_cluster.main.cache_nodes[0].address
 
   # Separate logical databases, matching .env.example: cache on 0, broker on 1,

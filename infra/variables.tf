@@ -73,6 +73,18 @@ variable "github_repo" {
   type        = string
 }
 
+variable "google_redirect_uri" {
+  description = "Where Google returns the browser after consent. Defaults to <frontend_origin>/api/auth/google/callback — the FRONTEND, not the API, matching the default in core.config. The Next app proxies it back. Must match the authorised redirect URI in the Google Cloud console exactly."
+  type        = string
+  default     = ""
+}
+
+variable "post_login_redirect_url" {
+  description = "Where the API sends the browser once login completes. Defaults to <frontend_origin>/onboarding/connect, matching the default in core.config."
+  type        = string
+  default     = ""
+}
+
 variable "allowed_account_id" {
   description = "The AWS account this stack may be applied to. The account is shared with other projects, so a wrong-profile apply is a real risk; this fails the plan instead of creating a parallel stack somewhere unexpected. Set to \"\" to disable the check."
   type        = string
