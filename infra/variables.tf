@@ -73,6 +73,12 @@ variable "github_repo" {
   type        = string
 }
 
+variable "allowed_account_id" {
+  description = "The AWS account this stack may be applied to. The account is shared with other projects, so a wrong-profile apply is a real risk; this fails the plan instead of creating a parallel stack somewhere unexpected. Set to \"\" to disable the check."
+  type        = string
+  default     = "061039771642"
+}
+
 variable "create_github_oidc_provider" {
   description = "Create the GitHub Actions OIDC provider. It is ACCOUNT-scoped and can exist only once, so leave this false if any other project in the account already created it — Terraform then references the existing provider instead of failing with EntityAlreadyExists."
   type        = bool
