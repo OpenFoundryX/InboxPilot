@@ -73,6 +73,12 @@ variable "github_repo" {
   type        = string
 }
 
+variable "create_github_oidc_provider" {
+  description = "Create the GitHub Actions OIDC provider. It is ACCOUNT-scoped and can exist only once, so leave this false if any other project in the account already created it — Terraform then references the existing provider instead of failing with EntityAlreadyExists."
+  type        = bool
+  default     = false
+}
+
 variable "image_tag" {
   description = "ECR image tag to run. CI passes the git SHA; the default exists only so the first apply can create task definitions before any image is built."
   type        = string

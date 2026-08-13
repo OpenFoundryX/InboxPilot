@@ -100,10 +100,31 @@ resource "aws_iam_role_policy" "task_exec_channel" {
 # Lets the deploy workflow assume a role with a short-lived token instead of
 # storing an AWS access key in GitHub secrets.
 
+# The provider is ACCOUNT-scoped: exactly one
+# token.actions.githubusercontent.com provider can exist per AWS account. This
+# account already has one, created by another project, so creating a second
+# fails the apply with EntityAlreadyExists — hence the toggle, defaulting to
+# "reference the existing one".
+#
+# Sharing it is not a compromise. One provider per account is how AWS intends
+# it to work, and the scoping that actually matters — which repo may assume
+# which role — lives on the role's trust policy below, not on the provider.
 resource "aws_iam_openid_connect_provider" "github" {
+  count = var.create_github_oidc_provider ? 1 : 0
+
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+}
+
+data "aws_iam_openid_connect_provider" "github" {
+  count = var.create_github_oidc_provider ? 0 : 1
+
+  url = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  github_oidc_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
 }
 
 resource "aws_iam_role" "github" {
@@ -113,7 +134,7 @@ resource "aws_iam_role" "github" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = local.github_oidc_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {

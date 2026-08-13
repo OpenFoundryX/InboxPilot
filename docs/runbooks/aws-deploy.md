@@ -58,6 +58,28 @@ github_repo     = "owner/InboxPilot"
 `frontend_origin` must match the Vercel origin **exactly**, scheme included and
 no trailing slash, or browser uploads fail the S3 CORS check.
 
+### 1a. This account is shared — what that does and does not mean
+
+Account `061039771642` also runs the `chronon-ai` project. InboxPilot gets its
+own VPC (`10.20.0.0/16`), which does not overlap `chronon-ai-prod-vpc`
+(`10.1.0.0/16`) or `chronon-ai-staging-vpc` (`10.0.0.0/16`), and every resource
+is prefixed `inboxpilot-`. There is no peering and no shared subnet or security
+group. Isolation is at the VPC level; IAM, billing and blast radius are shared.
+
+One resource genuinely cannot be duplicated: **the GitHub Actions OIDC
+provider**. It is account-scoped, and this account already has one. Hence:
+
+```hcl
+create_github_oidc_provider = false   # the default
+```
+
+Leave it false here. Terraform references the existing provider via a data
+source. Set it to `true` only when applying into a fresh AWS account that has
+never had a GitHub OIDC provider — otherwise the apply fails with
+`EntityAlreadyExists`. Per-repo scoping is enforced on the deploy role's trust
+policy (`token.actions.githubusercontent.com:sub`), not on the shared provider,
+so sharing it grants `chronon-ai` nothing.
+
 ### 2. Push the secrets
 
 ```bash
@@ -207,6 +229,8 @@ before rolling services back.
 | Scheduled sweeps fire twice | Two beat schedulers. See the double-beat check above. |
 | `terraform plan` wants to revert the running image | Expected only if `ignore_changes = [task_definition]` was removed from the services in `ecs.tf`. |
 | `terraform destroy` refuses on the DB | `deletion_protection = true` on `aws_db_instance.main`, deliberately. Disable it in a separate apply first. |
+| `EntityAlreadyExists` on the OIDC provider | `create_github_oidc_provider = true` in an account that already has one. Set it back to `false`. |
+| `NoSuchEntity` reading the OIDC provider | The reverse: `false` in a fresh account with no provider yet. Set it to `true` for the first apply. |
 
 ## Cost
 
