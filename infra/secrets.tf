@@ -86,6 +86,7 @@ locals {
       DATABASE_URL         = aws_ssm_parameter.database_url.arn
       S3_ACCESS_KEY_ID     = aws_ssm_parameter.s3_access_key_id.arn
       S3_SECRET_ACCESS_KEY = aws_ssm_parameter.s3_secret_access_key.arn
+      CELERY_BROKER_URL    = aws_ssm_parameter.celery_broker_url.arn
     },
   )
 }

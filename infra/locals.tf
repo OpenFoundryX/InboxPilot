@@ -30,9 +30,14 @@ locals {
 
   redis_host = aws_elasticache_cluster.main.cache_nodes[0].address
 
-  # Separate logical databases, matching .env.example: cache on 0, broker on 1,
-  # results on 2. One instance, three namespaces that can be flushed apart.
+  # Redis is cache, locks and rate limits on db 0, and the Celery *result*
+  # backend on db 2. The broker is RabbitMQ — db 1 is deliberately unused now,
+  # left free rather than renumbered so existing keys keep their meaning.
   redis_url             = "redis://${local.redis_host}:6379/0"
-  celery_broker_url     = "redis://${local.redis_host}:6379/1"
   celery_result_backend = "redis://${local.redis_host}:6379/2"
+
+  # Resolved through Cloud Map inside the VPC. The task's IP changes on every
+  # replacement, which is why nothing may cache this address.
+  rabbitmq_user = "inboxos"
+  rabbitmq_host = "rabbitmq.${aws_service_discovery_private_dns_namespace.main.name}"
 }

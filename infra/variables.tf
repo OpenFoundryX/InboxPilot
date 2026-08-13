@@ -73,6 +73,24 @@ variable "github_repo" {
   type        = string
 }
 
+variable "rabbitmq_cpu" {
+  description = "Fargate CPU units for RabbitMQ. 512 = 0.5 vCPU."
+  type        = number
+  default     = 512
+}
+
+variable "rabbitmq_memory" {
+  description = "Fargate memory (MiB) for RabbitMQ. Below 1024 is not advisable: RabbitMQ blocks publishers once it passes 40% of available memory, so 512MiB leaves roughly 200MiB of headroom before the queue stops accepting."
+  type        = number
+  default     = 1024
+}
+
+variable "rabbitmq_image" {
+  description = "RabbitMQ image. Pinned to a minor version rather than a floating tag so a restart cannot silently change broker versions under a live queue."
+  type        = string
+  default     = "rabbitmq:3.13-management"
+}
+
 variable "google_redirect_uri" {
   description = "Where Google returns the browser after consent. Defaults to <frontend_origin>/api/auth/google/callback — the FRONTEND, not the API, matching the default in core.config. The Next app proxies it back. Must match the authorised redirect URI in the Google Cloud console exactly."
   type        = string

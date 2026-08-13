@@ -36,8 +36,9 @@ locals {
     { name = "LOG_LEVEL", value = "INFO" },
     { name = "APP_NAME", value = "inboxos" },
 
+    # CELERY_BROKER_URL is absent here on purpose — it carries the RabbitMQ
+    # password, so it arrives from SSM through the secrets block instead.
     { name = "REDIS_URL", value = local.redis_url },
-    { name = "CELERY_BROKER_URL", value = local.celery_broker_url },
     { name = "CELERY_RESULT_BACKEND", value = local.celery_result_backend },
 
     { name = "PUBLIC_BASE_URL", value = "https://${var.api_domain}" },

@@ -158,6 +158,72 @@ aws ssm get-parameter --name /inboxpilot/prod/DATABASE_URL \
   --with-decryption --query 'Parameter.Value' --output text
 ```
 
+## RabbitMQ
+
+The Celery broker. A single Fargate task, reached at
+`rabbitmq.inboxpilot.local:5672` through Cloud Map, with its mnesia directory on
+EFS so queued messages survive restarts and deploys.
+
+Redis is no longer the broker. It keeps the cache, locks and rate limits on
+db 0, and the Celery *result* backend on db 2.
+
+```bash
+# Is it up?
+aws ecs describe-services --cluster $CLUSTER --services inboxpilot-rabbitmq \
+  --query 'services[0].{running:runningCount,desired:desiredCount}' --output table
+
+aws logs tail /ecs/inboxpilot/rabbitmq --since 30m
+```
+
+### Inspecting queues
+
+The management UI on 15672 is deliberately not published. Use the CLI inside
+the container:
+
+```bash
+TASK=$(aws ecs list-tasks --cluster $CLUSTER --service-name inboxpilot-rabbitmq \
+  --query 'taskArns[0]' --output text)
+
+aws ecs execute-command --cluster $CLUSTER --task "$TASK" \
+  --container rabbitmq --interactive --command "/bin/bash"
+
+# inside:
+rabbitmqctl list_queues name messages consumers
+rabbitmqctl status
+rabbitmq-diagnostics ping
+```
+
+`list_queues` showing a growing `messages` count with `consumers` at 0 means the
+worker is not connected — check `/ecs/inboxpilot/worker` for connection errors
+rather than restarting the broker.
+
+### Things that will bite
+
+🛑 **Never run two RabbitMQ tasks.** Both would mount the same EFS directory,
+and the second either fails on a locked mnesia or corrupts it. The service is
+pinned to `desired_count = 1` with `0/100` deployment percentages so the old
+task always stops before the new one starts. That means **a deploy of the broker
+is a brief broker outage** — Celery reconnects on its own
+(`broker_connection_retry_on_startup`), and durable queues on EFS keep the
+messages.
+
+⚠️ **`RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS` only apply on first
+boot**, when the mnesia directory is empty. Once EFS holds a database, rotating
+the SSM password does **not** change the broker's credentials — it just breaks
+the clients. To actually rotate: change it inside the broker with
+`rabbitmqctl change_password`, then update SSM to match.
+
+⚠️ **`RABBITMQ_NODENAME` is pinned to `rabbit@inboxpilot`.** Left unset,
+RabbitMQ derives the node name from the container hostname, which changes on
+every task replacement — it would come up as a brand new empty node beside the
+old data, and every queue would appear to have vanished.
+
+### If the queue data is ever lost
+
+Not fatal. Every scheduled task re-fires on its own interval — the worst case is
+one missed sweep cycle. What does not survive is anything queued but not yet
+processed, such as a booking confirmation email accepted a moment earlier.
+
 ## Redis
 
 Same story — private subnet, task security group only. Reach it from inside a
