@@ -17,7 +17,15 @@ import models  # noqa: F401
 from models.base import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+# `%` doubled because set_main_option writes into a configparser, which reads a
+# lone `%` as interpolation syntax and raises before any migration runs. A
+# percent-encoded character in the password is enough to trigger it: a generated
+# RDS password containing `{` arrives here as `%7B` and alembic dies with
+# "invalid interpolation syntax", naming a position in the URL and nothing about
+# the cause. Only this call needs it — the URL passed to run_migrations_offline
+# and the app's own engine never touch configparser.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
