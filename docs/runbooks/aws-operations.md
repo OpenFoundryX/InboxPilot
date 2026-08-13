@@ -205,6 +205,94 @@ aws ecs update-service --cluster $CLUSTER --service inboxpilot-api --desired-cou
 
 Terraform ignores `desired_count`, so a manual scale survives the next apply.
 
+## The beat scheduler
+
+Beat runs *inside* the worker container (`celery worker -B`), not as its own
+service. One process, one scheduler. The schedule lives in
+`src/beat_schedule.py`; a task listed there but missing from `TASK_MODULES` in
+`src/worker.py` is dispatched and silently rejected as unknown, which has
+happened before — the comments in `worker.py` name the two that were lost that
+way.
+
+### Is it alive?
+
+```bash
+aws logs tail /ecs/inboxpilot/worker --since 5m | grep "Sending due task"
+```
+
+Five tasks fire every minute (`mailman.tick`, `gmail.poll_all`,
+`routines.sweep`, `reminders.sweep`, `meetings.sweep`), so silence for more than
+a minute means beat is not running even if the container is up.
+
+```bash
+# Did the worker register its tasks at boot?
+aws logs tail /ecs/inboxpilot/worker --since 30m | grep -A25 "\[tasks\]"
+```
+
+### The single-worker rule
+
+🛑 **`inboxpilot-worker` must stay at `desired_count = 1`.** Two workers means
+two embedded schedulers, and every sweep fires twice — duplicate briefings,
+duplicate reminders, duplicate bots booked for the same meeting.
+
+ECS makes this sharper than a normal host would. A default rolling deploy
+(`100/200`) briefly runs the old and new task together, which is two schedulers
+for the length of the changeover. That is why the worker service sets:
+
+```hcl
+deployment_minimum_healthy_percent = 0
+deployment_maximum_percent         = 100
+```
+
+The old task stops before the new one starts. It costs about a minute with no
+worker on each deploy; queued tasks wait in Redis and are consumed when the new
+task comes up.
+
+### Verifying no double-fire across a deploy
+
+The failure only appears during a changeover, so check it there:
+
+```bash
+# Two distinct task IDs = a rollover happened in this window
+aws logs tail /ecs/inboxpilot/worker --since 3h | awk '{print $2}' | sort -u
+
+# No minute may contain two workers
+aws logs tail /ecs/inboxpilot/worker --since 3h \
+  | awk '{split($1,t,":"); print t[1]":"t[2], $2}' | sort -u \
+  | awk '{print $1}' | uniq -c | awk '$1>1 {print "OVERLAP:", $2}'
+
+# No task may fire twice in the same minute
+aws logs tail /ecs/inboxpilot/worker --since 3h | grep "Sending due task" \
+  | sed -E 's/.*\[([0-9-]+ [0-9]{2}:[0-9]{2}):.*Sending due task ([a-z-]+).*/\1 \2/' \
+  | sort | uniq -c | awk '$1>1 {print "DUPLICATE:", $0}'
+```
+
+All three printing nothing is the pass condition. Verified clean on
+2026-08-14 across a real deploy transition.
+
+### Scaling the worker later
+
+When one worker is no longer enough, beat must come out first:
+
+1. Add an `aws_ecs_service.beat` + task definition running
+   `celery -A worker.celery_app beat` at `desired_count = 1`, with the same
+   `0/100` deployment percentages.
+2. Change the worker's command from `worker -B` to plain `worker`.
+3. Only then raise the worker count, and it can go back to `100/200`.
+
+Roughly +$10/month for the extra task. Doing it in the other order double-fires
+every sweep for as long as both workers run.
+
+### Note on Gmail push
+
+`GMAIL_PUSH_ENABLED` is `true` but `GOOGLE_PUBSUB_SA_EMAIL` is unset, so the
+push endpoint accepts unauthenticated requests, and `main.py:51` logs
+`gmail.push_unverified` on every boot. Per the comment in `beat_schedule.py`, an
+org policy currently blocks Gmail's service account from publishing to the
+topic, so push does not deliver anyway — `gmail-poll` at 60s is what actually
+moves mail. If the boot warnings are noise, set `GMAIL_PUSH_ENABLED=false` until
+push genuinely works; mail latency does not change.
+
 ## Which image is running
 
 ```bash
