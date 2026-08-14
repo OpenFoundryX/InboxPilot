@@ -156,10 +156,22 @@ The password is in SSM (see below).
 
 Two things this involves that are easy to miss:
 
-- **The DB subnet group moves to the public subnets.** RDS only assigns a
-  reachable public address in a subnet with a route to an internet gateway; left
-  in the private subnets, `publicly_accessible = true` yields an endpoint that
-  resolves and then times out, which looks exactly like a firewall problem.
+- **The DB's subnets get an internet gateway route.** RDS assigns a public
+  address to the instance in whichever subnet it already occupies, and that
+  address is only reachable if the subnet is routed. The flag alone yields an
+  endpoint that resolves and then times out — indistinguishable from a firewall
+  problem.
+
+  Note it is the *route* that changes, not the subnet group. Listing the public
+  subnets in the group instead fails with `Some of the subnets to be deleted are
+  currently in use`: RDS will not release a subnet the instance occupies, and a
+  running instance cannot be relocated. The route table and its associations
+  exist only while the flag is on, so turning it off drops them and the subnets
+  fall back to the local-only main route table.
+
+  ElastiCache and RabbitMQ's EFS mount targets share those subnets and stay
+  unreachable throughout — none has a public IP, so a route alone gets an
+  outsider nowhere.
 - **The security group is the only protection.** Behind it is one password
   guarding users' Google OAuth tokens, mail content and billing records. The
   `db_allowed_cidrs` validation rejects `0.0.0.0/0`, but a stale home IP in that

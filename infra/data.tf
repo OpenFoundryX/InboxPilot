@@ -1,12 +1,14 @@
-# Private subnets normally. When the instance is made publicly accessible the
-# group must move to the public subnets: RDS only assigns a reachable public
-# address in a subnet that has a route to an internet gateway. Left in the
-# private subnets, `publicly_accessible = true` produces an endpoint that
-# resolves to a public IP and times out — the failure looks identical to a
-# firewall problem, so it wastes an afternoon.
+# Always the private subnets. Whether the instance is reachable is controlled by
+# whether those subnets have an internet gateway route — see
+# aws_route_table.private_egress in network.tf — not by which subnets are listed
+# here.
+#
+# Swapping these for the public subnets does not work: RDS refuses to remove a
+# subnet the instance currently occupies ("Some of the subnets to be deleted are
+# currently in use"), and a running instance cannot be relocated between subnets.
 resource "aws_db_subnet_group" "main" {
   name       = local.name
-  subnet_ids = var.db_publicly_accessible ? aws_subnet.public[*].id : aws_subnet.private[*].id
+  subnet_ids = aws_subnet.private[*].id
   tags       = { Name = local.name }
 }
 

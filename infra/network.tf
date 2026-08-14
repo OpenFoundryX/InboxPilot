@@ -58,9 +58,42 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# The private subnets deliberately have no route table of their own; they fall
-# back to the VPC's main route table, which carries only the local route. No
-# egress, by construction rather than by policy.
+# The private subnets normally have no route table of their own; they fall back
+# to the VPC's main route table, which carries only the local route. No egress,
+# by construction rather than by policy.
+#
+# `db_publicly_accessible` is the one exception. RDS assigns a public address to
+# the instance in whichever subnet it already occupies, and that address is only
+# reachable if the subnet has an internet-gateway route — so exposing Postgres
+# means routing its subnets, not relocating the instance (which RDS will not do
+# while the instance is in use).
+#
+# Scoped as its own route table and association so that turning the flag off
+# removes the association entirely, and the subnets fall straight back to the
+# local-only main route table. Isolation returns without a trace.
+#
+# ElastiCache, RabbitMQ's EFS mount targets, and anything else in these subnets
+# stay unreachable regardless: none of them has a public IP, so a route alone
+# gets an outsider nowhere.
+resource "aws_route_table" "private_egress" {
+  count = var.db_publicly_accessible ? 1 : 0
+
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = { Name = "${local.name}-private-egress" }
+}
+
+resource "aws_route_table_association" "private_egress" {
+  count = var.db_publicly_accessible ? 2 : 0
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private_egress[0].id
+}
 
 # ------------------------------------------------------------------ security
 
