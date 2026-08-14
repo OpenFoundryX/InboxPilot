@@ -73,6 +73,35 @@ variable "github_repo" {
   type        = string
 }
 
+variable "db_publicly_accessible" {
+  description = "Expose RDS to the internet. When true the DB subnet group also moves to the public subnets, because a publicly-accessible instance in a subnet with no internet gateway route gets a public IP that nothing can reach. Pair with db_allowed_cidrs — this flag alone does not open the security group."
+  type        = bool
+  default     = false
+}
+
+variable "db_allowed_cidrs" {
+  description = "CIDRs allowed to reach Postgres from outside the VPC. Only consulted when db_publicly_accessible is true. Never set this to 0.0.0.0/0 — that is the whole internet against one password."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = !contains(var.db_allowed_cidrs, "0.0.0.0/0")
+    error_message = "0.0.0.0/0 exposes the database to the entire internet. List specific addresses."
+  }
+}
+
+variable "bastion_enabled" {
+  description = "Stand up the SSM jump host for reaching RDS, Redis and RabbitMQ without exposing them. Off by default; nothing else depends on it."
+  type        = bool
+  default     = false
+}
+
+variable "bastion_instance_type" {
+  description = "Bastion size. t4g.nano is ~$3/month and ample for a port-forward."
+  type        = string
+  default     = "t4g.nano"
+}
+
 variable "rabbitmq_cpu" {
   description = "Fargate CPU units for RabbitMQ. 512 = 0.5 vCPU."
   type        = number

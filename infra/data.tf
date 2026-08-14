@@ -1,6 +1,12 @@
+# Private subnets normally. When the instance is made publicly accessible the
+# group must move to the public subnets: RDS only assigns a reachable public
+# address in a subnet that has a route to an internet gateway. Left in the
+# private subnets, `publicly_accessible = true` produces an endpoint that
+# resolves to a public IP and times out — the failure looks identical to a
+# firewall problem, so it wastes an afternoon.
 resource "aws_db_subnet_group" "main" {
   name       = local.name
-  subnet_ids = aws_subnet.private[*].id
+  subnet_ids = var.db_publicly_accessible ? aws_subnet.public[*].id : aws_subnet.private[*].id
   tags       = { Name = local.name }
 }
 
@@ -31,7 +37,12 @@ resource "aws_db_instance" "main" {
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
-  publicly_accessible    = false
+  publicly_accessible    = var.db_publicly_accessible
+
+  # Subnet-group and accessibility changes would otherwise queue until the
+  # Sunday maintenance window, leaving Terraform state and reality disagreeing
+  # for days.
+  apply_immediately = true
 
   multi_az                = false
   backup_retention_period = 7

@@ -142,11 +142,39 @@ psql "host=localhost port=5432 dbname=inboxos user=inboxos_user"
 
 This is not built yet. Ask and it is ~40 lines of Terraform.
 
-### What NOT to do
+### Option 3 — direct access (currently ENABLED)
 
-Do not set `publicly_accessible = true` and open the security group to your IP.
-It works, and it puts your production database on the public internet behind one
-password, permanently, because nobody ever reverts it.
+`db_publicly_accessible = true` in `terraform.tfvars`, with the security group
+scoped to the addresses in `db_allowed_cidrs`. Connect straight from a laptop:
+
+```bash
+psql "host=$(cd infra && terraform output -raw db_address) port=5432 \
+      dbname=inboxos user=inboxos_user sslmode=require"
+```
+
+The password is in SSM (see below).
+
+Two things this involves that are easy to miss:
+
+- **The DB subnet group moves to the public subnets.** RDS only assigns a
+  reachable public address in a subnet with a route to an internet gateway; left
+  in the private subnets, `publicly_accessible = true` yields an endpoint that
+  resolves and then times out, which looks exactly like a firewall problem.
+- **The security group is the only protection.** Behind it is one password
+  guarding users' Google OAuth tokens, mail content and billing records. The
+  `db_allowed_cidrs` validation rejects `0.0.0.0/0`, but a stale home IP in that
+  list is someone else's address now.
+
+**Turn it off when the work is done:**
+
+```hcl
+db_publicly_accessible = false
+db_allowed_cidrs       = []
+```
+
+then `terraform apply`. For ongoing access prefer Option 2 — the bastion gives
+the same psql session for ~$3/month with nothing exposed. It is already written
+in `infra/bastion.tf`; flip `bastion_enabled = true`.
 
 ### The password
 

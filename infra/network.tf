@@ -135,6 +135,25 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.task.id]
   }
 
+  # Operator access from named addresses, only while db_publicly_accessible is
+  # on. Empty list = no rule, which is the default.
+  #
+  # This is the whole protection. Everything reaching the instance from outside
+  # the VPC is stopped here or not at all, and behind it is one password
+  # guarding users' Google OAuth tokens, mail content and billing records.
+  # Narrow it the moment it is not needed, and prefer bastion_enabled instead.
+  dynamic "ingress" {
+    for_each = var.db_publicly_accessible && length(var.db_allowed_cidrs) > 0 ? [1] : []
+
+    content {
+      description = "Postgres from named operator addresses"
+      from_port   = 5432
+      to_port     = 5432
+      protocol    = "tcp"
+      cidr_blocks = var.db_allowed_cidrs
+    }
+  }
+
   tags = { Name = "${local.name}-rds" }
 }
 

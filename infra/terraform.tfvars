@@ -8,3 +8,15 @@
 api_domain      = "api.inboxoshq.com"
 frontend_origin = "https://inboxoshq.com"
 github_repo     = "OpenFoundryX/InboxPilot"
+
+# TEMPORARY — direct operator access to Postgres from the internet.
+#
+# While these two lines are active the production database is reachable from
+# any host in db_allowed_cidrs, guarded by a single password. Home and office
+# addresses rotate, so the list goes stale and the temptation is to widen it.
+#
+# To close it again: set the flag to false, empty the list, `terraform apply`.
+# For a permanent answer set bastion_enabled = true instead — an SSM tunnel
+# gives the same psql session for ~$3/month with nothing exposed.
+db_publicly_accessible = true
+db_allowed_cidrs       = ["122.172.82.87/32"] # laptop, 2026-08-14
