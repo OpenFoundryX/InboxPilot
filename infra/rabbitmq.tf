@@ -227,11 +227,21 @@ resource "aws_ecs_task_definition" "rabbitmq" {
     environment = [
       { name = "RABBITMQ_DEFAULT_USER", value = local.rabbitmq_user },
       { name = "RABBITMQ_DEFAULT_VHOST", value = "/" },
-      # Fixed so the mnesia directory on EFS keeps the same name across task
-      # replacements. Without it RabbitMQ derives the node name from the
-      # container hostname, which changes every deploy, and it comes up as a
-      # brand new empty node beside the old data.
-      { name = "RABBITMQ_NODENAME", value = "rabbit@inboxpilot" },
+      # Two requirements pull against each other here, and both must hold.
+      #
+      # Stable: the node name is the identity of the mnesia directory on EFS.
+      # Left unset, RabbitMQ derives it from the container hostname, which
+      # changes on every task replacement — the broker then comes up as a brand
+      # new empty node beside its own data, and every queue appears to vanish.
+      #
+      # Resolvable: EPMD resolves the part after the @ through DNS at boot. A
+      # descriptive name like rabbit@inboxpilot satisfies stability and fails
+      # here — nothing is named "inboxpilot", so the node dies immediately with
+      # {epmd_error,"inboxpilot",nxdomain} and the task crash-loops.
+      #
+      # localhost is the one name that is both: always resolvable, and identical
+      # in every container this task ever runs.
+      { name = "RABBITMQ_NODENAME", value = "rabbit@localhost" },
     ]
 
     secrets = [
