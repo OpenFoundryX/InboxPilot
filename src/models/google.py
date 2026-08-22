@@ -24,13 +24,25 @@ from models.base import Base, TimestampMixin, UUIDMixin
 # the ones the Connect step adds.
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 GMAIL_SETTINGS_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic"
-CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
+
+# Calendar is two narrow scopes rather than the broad `calendar` one. The code
+# only ever touches `calendars/primary/events` and `freeBusy.query`, and Google
+# rejected the broad scope during OAuth verification as more than the product
+# can evidence a need for. `freeBusy.query` will not accept `calendar.events`,
+# which is the only reason the broad scope was ever used.
+CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+CALENDAR_FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy"
+
+# The broad scope this app used to request. No longer asked for, but grants
+# signed before the narrowing still carry it, and it strictly includes both
+# scopes above — see `expand_legacy_scopes`.
+CALENDAR_LEGACY_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 # What each half of the product needs, checked per row so one grant can serve
 # both while `gmail.is_connected` and `calendar.is_connected` stay separate
 # questions with separate answers.
 GMAIL_REQUIRED_SCOPES = frozenset({GMAIL_MODIFY_SCOPE, GMAIL_SETTINGS_SCOPE})
-CALENDAR_REQUIRED_SCOPES = frozenset({CALENDAR_SCOPE})
+CALENDAR_REQUIRED_SCOPES = frozenset({CALENDAR_EVENTS_SCOPE, CALENDAR_FREEBUSY_SCOPE})
 
 CONNECT_SCOPES = (
     "openid",
@@ -38,8 +50,28 @@ CONNECT_SCOPES = (
     "profile",
     GMAIL_MODIFY_SCOPE,
     GMAIL_SETTINGS_SCOPE,
-    CALENDAR_SCOPE,
+    CALENDAR_EVENTS_SCOPE,
+    CALENDAR_FREEBUSY_SCOPE,
 )
+
+
+def expand_legacy_scopes(granted: frozenset[str]) -> frozenset[str]:
+    """Read a stored grant as the set of scopes it actually confers.
+
+    Every connection check in the app is a subset test against
+    `CALENDAR_REQUIRED_SCOPES`. Narrowing the request without this would make
+    each of them read an existing broad-`calendar` grant as *not* covering
+    calendar at all — every current user would show as disconnected and be sent
+    back through consent, for access they already granted a superset of.
+
+    Expanding here rather than adding an "or legacy" branch to the four call
+    sites keeps one rule in one place: the broad scope genuinely does confer
+    both narrow ones, so a grant holding it is not a special case to remember,
+    it is simply a grant that covers them. New grants are unaffected.
+    """
+    if CALENDAR_LEGACY_SCOPE not in granted:
+        return granted
+    return granted | CALENDAR_REQUIRED_SCOPES
 
 
 class GoogleConnection(UUIDMixin, TimestampMixin, Base):

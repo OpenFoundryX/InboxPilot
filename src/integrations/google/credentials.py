@@ -36,6 +36,7 @@ from integrations.google.oauth import (
 from models.google import (
     CALENDAR_REQUIRED_SCOPES,
     GMAIL_REQUIRED_SCOPES,
+    expand_legacy_scopes,
     GoogleConnection,
 )
 
@@ -259,8 +260,13 @@ def _do_refresh(user_id: str, state: ConnectionState) -> GoogleCredentials:
         raise
 
     expiry = datetime.now(timezone.utc) + timedelta(seconds=token.expires_in)
-    scopes = token.scopes or state.scopes
-    _persist_refreshed(user_id, token, expiry, scopes)
+    # The stored column holds exactly what Google returned, so only a refresh
+    # that actually carried scopes may rewrite it — passing None leaves it be.
+    # The expansion is applied to the in-memory copy only, which is what every
+    # scope check reads; it is idempotent, so a `state.scopes` that `_load`
+    # already expanded passes through unchanged.
+    scopes = expand_legacy_scopes(token.scopes or state.scopes)
+    _persist_refreshed(user_id, token, expiry, token.scopes or None)
     invalidate(user_id)
 
     log.info("google.token_refreshed", user_id=user_id, expires_in=token.expires_in)
@@ -273,7 +279,7 @@ def _do_refresh(user_id: str, state: ConnectionState) -> GoogleCredentials:
 
 
 def _persist_refreshed(
-    user_id: str, token: RefreshedToken, expiry: datetime, scopes: frozenset[str]
+    user_id: str, token: RefreshedToken, expiry: datetime, scopes: frozenset[str] | None
 ) -> None:
     """Write the new token, without clobbering a newer one.
 
@@ -290,9 +296,13 @@ def _persist_refreshed(
         values: dict = {
             "access_token": encrypt(token.access_token),
             "token_expiry": expiry,
-            "scopes": " ".join(sorted(scopes)),
             "last_error": None,
         }
+        # `None` means this refresh returned no scope list — Google omits it
+        # when nothing changed. Leave the stored grant alone rather than
+        # writing a guess over it.
+        if scopes is not None:
+            values["scopes"] = " ".join(sorted(scopes))
         await db.execute(
             update(GoogleConnection)
             .where(
@@ -553,7 +563,7 @@ async def _load(db, user_id: str) -> ConnectionState | None:
         user_id=user_id,
         email=row.email,
         google_sub=row.google_sub,
-        scopes=frozenset(row.scopes.split()),
+        scopes=expand_legacy_scopes(frozenset(row.scopes.split())),
         history_id=row.history_id,
         watch_expires_at=row.watch_expires_at,
         revoked=row.revoked_at is not None,

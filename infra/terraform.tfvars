@@ -19,4 +19,4 @@ github_repo     = "OpenFoundryX/InboxPilot"
 # For a permanent answer set bastion_enabled = true instead — an SSM tunnel
 # gives the same psql session for ~$3/month with nothing exposed.
 db_publicly_accessible = true
-db_allowed_cidrs       = ["122.172.82.87/32"] # laptop, 2026-08-14
+db_allowed_cidrs       = ["122.172.82.15/32"] # laptop, 2026-08-22
