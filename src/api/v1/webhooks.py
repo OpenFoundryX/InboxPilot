@@ -170,7 +170,11 @@ async def razorpay_webhook(request: Request, db: DbSession) -> dict:
     signature.
     """
     raw = await request.body()
-    signature = request.headers.get("x-razorpay-signature", "")
+    # BILLING DISABLED (temporary, for testing): the signature check is
+    # commented out, so this public route currently trusts its caller. Restore
+    # it — and the docstring's claim above becomes true again — before this
+    # takes real Razorpay traffic.
+    signature = request.headers.get("x-razorpay-signature", "")  # noqa: F841
     # if not verify_signature(raw, signature, settings.RAZORPAY_WEBHOOK_SECRET):
     #     raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid signature")
 

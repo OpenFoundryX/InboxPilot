@@ -6,6 +6,11 @@ self-addressed message that matches the trigger too. Two independent guards stop
 that loop — the Redis registry checked at the webhook door, and the chat-label
 check below for anything the registry missed.
 
+The sweep's query carried a second condition too — `to:me`. Only mail you send
+*to yourself* is a command; mail you send to anyone else is just mail. The
+poller applies that rule, and `_handle` applies it again on the recipients it
+was handed, because getting it wrong means replying into a stranger's thread.
+
 Deliberately NOT retried. A failed action is reported to the user inside the
 reply (the behaviour the sweep had); retrying a task that already sent mail
 would double-send.
@@ -17,6 +22,8 @@ from core.database import run_async, with_worker_session
 from core.idempotency import allow_reply, remember_ours
 from core.logging import get_logger
 from integrations.google import gmail
+from integrations.google.credentials import get_connection
+from integrations.google.mime import canonical_address
 from models.users import User
 from services.commands import handlers
 from services.commands.ask import answer_question
@@ -39,6 +46,7 @@ def handle_command_email(
     body: str | None = None,
     thread_id: str | None = None,
     label_ids: list[str] | None = None,
+    recipients: list[str] | None = None,
 ) -> dict:
     return run_async(
         with_worker_session(
@@ -50,6 +58,7 @@ def handle_command_email(
                 body=body,
                 thread_id=thread_id,
                 label_ids=label_ids or [],
+                recipients=recipients,
             )
         )
     )
@@ -64,11 +73,21 @@ async def _handle(
     body: str | None,
     thread_id: str | None,
     label_ids: list[str],
+    recipients: list[str] | None = None,
 ) -> dict:
     uid = uuid.UUID(user_id)
     user = await db.get(User, uid)
     if not user or not user.email:
         return {"skipped": "unknown_user"}
+
+    # Same rule the poller already applied, checked again on this side of the
+    # queue: this task sends mail, so it does not take its caller's word for a
+    # message being self-addressed. `None` means an enqueue that predates the
+    # field, and is treated as *not* self-addressed — a dropped command costs a
+    # retry, an unwanted reply lands in someone else's thread.
+    if not _self_addressed(user_id, user.email, recipients):
+        log.info("commands.skipped_not_self", user_id=user_id, message_id=message_id)
+        return {"skipped": "not_self_addressed"}
 
     # Loop guard: anything already filed under the chat label is our own mail.
     # Payload label_ids are Gmail label *ids*, so resolve the name to an id.
@@ -99,6 +118,25 @@ async def _handle(
 
     log.info("commands.processed", user_id=user_id, message_id=message_id, actions=len(actions))
     return {"actions": len(actions), "replied": replied}
+
+
+def _self_addressed(user_id: str, account_email: str, recipients: list[str] | None) -> bool:
+    """Whether this message was addressed to the user who owns the mailbox.
+
+    Both identities count. `User.email` is the login and is what a reply is sent
+    to; the connected Google account is the mailbox actually being polled, and
+    the two need not be the same address.
+    """
+    if not recipients:
+        return False
+
+    known = {canonical_address(account_email)}
+    connection = get_connection(user_id)
+    if connection and connection.email:
+        known.add(canonical_address(connection.email))
+    known.discard("")
+
+    return any(canonical_address(r) in known for r in recipients)
 
 
 def _reply(

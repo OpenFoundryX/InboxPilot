@@ -542,8 +542,13 @@ def fetch_recent_emails(
     days: int = 30,
     max_results: int | None = None,
 ) -> list[EmailSummary]:
-    """Fetch the user's emails from the last `days` days."""
-    return fetch_by_query(user_id, f"newer_than:{days}d", max_results)
+    """Fetch the user's *received* mail from the last `days` days.
+
+    `-from:me` because both callers are classification backfills, and a category
+    label belongs on mail you were sent, not on mail you sent. It also keeps the
+    backfill off self-addressed notes, which are the command surface.
+    """
+    return fetch_by_query(user_id, f"newer_than:{days}d -from:me", max_results)
 
 
 def _summarize(message: dict, *, verbose: bool = True) -> EmailSummary:

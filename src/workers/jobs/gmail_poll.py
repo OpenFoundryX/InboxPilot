@@ -37,8 +37,15 @@ from integrations.google.credentials import (
     set_history_id,
     set_watch_expiry,
 )
-from integrations.google.mime import body_text, headers, snippet_of
+from integrations.google.mime import (
+    addressed_to,
+    body_text,
+    headers,
+    recipient_addresses,
+    snippet_of,
+)
 from integrations.google.oauth import GrantRevoked
+from services.billing.gate import mail_gate_open
 from services.mailman.gmail_ops import HOLD_LABEL_NAME, resolve_label_id
 from workers.celery_app import celery_app
 from workers.jobs.classify_new_email import classify_new_email
@@ -135,6 +142,12 @@ def install_watch(user_id: str) -> bool:
     if not settings.GMAIL_PUSH_ENABLED or not settings.GOOGLE_PUBSUB_TOPIC:
         return False
 
+    # A watch is a standing subscription to someone's mail. Neither install one
+    # for a gated mailbox nor renew an existing one, so a lapsed account stops
+    # generating push traffic instead of merely having it discarded downstream.
+    if not mail_gate_open(user_id):
+        return False
+
     try:
         result = gmail.watch(user_id, settings.GOOGLE_PUBSUB_TOPIC)
     except GrantRevoked:
@@ -162,6 +175,12 @@ def install_watch(user_id: str) -> bool:
 @celery_app.task(name="gmail.poll_user")
 def poll_user(user_id: str) -> dict:
     """Walk one mailbox's history and enqueue work for anything new."""
+    # Before the lock, not inside it: a gated mailbox should not even contend
+    # for one. Push notifications land here too, so this is the check that
+    # stops an unpaid account being polled by its own incoming mail.
+    if not mail_gate_open(user_id):
+        return {"skipped": "gated"}
+
     with single_run(f"gmail-poll:{user_id}", ttl=120) as acquired:
         if not acquired:
             # A previous pass is still running. Skipping is right: it holds the
@@ -189,7 +208,7 @@ def _poll(user_id: str) -> dict:
         return {"error": str(exc)}
 
     messages = result["messages"][:MAX_MESSAGES_PER_POLL]
-    queued = _dispatch(user_id, messages)
+    queued = _dispatch(user_id, messages, account_email=state.email)
 
     if new_cursor := result.get("history_id"):
         _advance(user_id, cursor, new_cursor)
@@ -244,10 +263,24 @@ def _reset_cursor(user_id: str) -> dict:
         return {"reset": True, "queued": 0}
 
     partials = [{"id": message_id, "threadId": thread_id} for message_id, thread_id in recent]
-    return {"reset": True, "queued": _dispatch(user_id, partials, labels_known=False)}
+    return {
+        "reset": True,
+        "queued": _dispatch(
+            user_id,
+            partials,
+            account_email=profile.get("emailAddress"),
+            labels_known=False,
+        ),
+    }
 
 
-def _dispatch(user_id: str, messages: list[dict], *, labels_known: bool = True) -> int:
+def _dispatch(
+    user_id: str,
+    messages: list[dict],
+    *,
+    account_email: str | None,
+    labels_known: bool = True,
+) -> int:
     """Filter, guard, and enqueue. Returns how many were handed off."""
     hold_label_id = _hold_label_id(user_id)
     queued = 0
@@ -282,7 +315,8 @@ def _dispatch(user_id: str, messages: list[dict], *, labels_known: bool = True) 
         if not labels_known and not _is_interesting(label_ids, hold_label_id):
             continue
 
-        _enqueue(user_id, message, label_ids)
+        if not _enqueue(user_id, message, label_ids, account_email):
+            continue
         queued += 1
 
     return queued
@@ -292,7 +326,9 @@ def _is_interesting(label_ids: list[str], hold_label_id: str | None) -> bool:
     """Whether a message is one we process at all.
 
     Reproduces the old trigger query — `label:inbox OR label:"inboxos-later"` —
-    plus SENT, which carries the self-emailed slash commands. Held mail has to
+    plus SENT, which carries the self-emailed slash commands. SENT is a coarse
+    filter on purpose: whether a sent message is *addressed to the user* can
+    only be known once its headers are fetched, so `_enqueue` makes that call. Held mail has to
     be included: Mailman's filter strips INBOX on delivery, so watching INBOX
     alone would miss exactly the mail that most needs classifying before its
     batch is released.
@@ -332,13 +368,26 @@ def _guard(user_id: str, message_id: str, is_command: bool) -> bool | None:
     return True
 
 
-def _enqueue(user_id: str, message: dict, label_ids: list[str]) -> None:
+def _enqueue(
+    user_id: str, message: dict, label_ids: list[str], account_email: str | None
+) -> bool:
+    """Hand one message to the task that owns it. Returns whether we did."""
     payload = message.get("payload") or {}
     header_map = headers(payload)
     message_id = str(message.get("id"))
     thread_id = message.get("threadId")
 
     if SENT_LABEL in label_ids:
+        # The command surface is mail you send *to yourself*, which is the half
+        # of the old `from:me to:me` sweep query that the SENT label does not
+        # carry. Without this, every message you send anyone is parsed as a
+        # command — and one that parses to no actions is answered as a question,
+        # so an ordinary email to a colleague gets an assistant reply in its
+        # thread. Mail sent to someone else is dropped here rather than
+        # classified: the classifier is for mail you received.
+        if not addressed_to(header_map, account_email):
+            return False
+
         text, _ = body_text(payload)
         handle_command_email.delay(
             str(user_id),
@@ -347,9 +396,10 @@ def _enqueue(user_id: str, message: dict, label_ids: list[str]) -> None:
             body=text,
             thread_id=thread_id,
             label_ids=label_ids,
+            recipients=recipient_addresses(header_map),
         )
         log.info("gmail.poll_command", user_id=user_id, message_id=message_id)
-        return
+        return True
 
     classify_new_email.delay(
         str(user_id),
@@ -363,6 +413,7 @@ def _enqueue(user_id: str, message: dict, label_ids: list[str]) -> None:
         # it needs from Gmail itself. Classification only ever wanted the
         # truncated preview above.
     )
+    return True
 
 
 def _snippet(message: dict, payload: dict) -> str | None:

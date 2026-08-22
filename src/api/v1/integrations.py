@@ -31,7 +31,6 @@ from schemas.integrations import (
     GoogleStatus,
 )
 from services.auth.dependencies import get_current_user
-from workers.jobs.sync_last_7_days import sync_last_7_days
 
 log = get_logger(__name__)
 
@@ -40,10 +39,6 @@ log = get_logger(__name__)
 # scoped to.
 _STATE_PREFIX = "goauth:"
 _STATE_TTL_SECONDS = 600
-
-# Give the stored grant a moment to settle before the worker starts calling
-# Gmail with it.
-_ONBOARD_DELAY_SECONDS = 5
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -132,7 +127,12 @@ async def google_callback(
             f"{landing}?connected=0&reason=server_error", status_code=302
         )
 
-    sync_last_7_days.apply_async((user_id,), countdown=_ONBOARD_DELAY_SECONDS)
+    # Deliberately does NOT start the mailbox sync. Connecting is consent to
+    # read the mailbox, not permission to start working in it, and this
+    # callback fires before the plan step — so firing here labelled the mail of
+    # users who never reached checkout. `services.billing.gate` owns the start
+    # now, triggered by whichever of onboarding-complete / trial-start lands
+    # second.
     log.info("google.connected", user_id=user_id, email=grant.email, scopes=sorted(grant.scopes))
     return RedirectResponse(f"{landing}?connected=1", status_code=302)
 

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.logging import get_logger
 from models.billing import Subscription
 from models.users import User
+from services.billing.gate import maybe_start_mail_sync
 
 log = get_logger(__name__)
 
@@ -109,6 +110,15 @@ async def handle_event(db: AsyncSession, event: dict) -> str:
         sub.razorpay_customer_id = entity["customer_id"]
 
     await db.flush()
+
+    # The other half of the start rule. This is where a mandate actually
+    # becomes a running trial, so for a user who finished the wizard before
+    # paying, this event is what starts their mailbox sync. No-op if they have
+    # not onboarded yet, or if they already synced once.
+    user = await db.get(User, sub.user_id)
+    if user is not None:
+        await maybe_start_mail_sync(db, user)
+
     return APPLIED
 
 

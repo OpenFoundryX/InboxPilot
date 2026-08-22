@@ -16,6 +16,7 @@ from integrations.google.credentials import set_history_id
 from workers.jobs.gmail_poll import install_watch
 from models.categorization import BUILTIN_CATEGORIES
 from models.users import User
+from services.billing.gate import mail_gate_open
 from services.categorization import backfill
 from services.categorization.pipeline import get_config
 from workers.celery_app import celery_app
@@ -30,6 +31,13 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
     Defaults to the full last-30-days window (paginated). Pass `max_results` to
     cap the fetch. Returns a summary; email bodies are metadata-only.
     """
+    # Re-checked here rather than trusted from the caller: this task is enqueued
+    # the moment onboarding and checkout both complete, and a trial can be
+    # cancelled between the enqueue and the run.
+    if not mail_gate_open(user_id):
+        log.info("gmail.sync_skipped_gated", user_id=user_id)
+        return {"skipped": "gated"}
+
     try:
         sync = gmail.ensure_labels(user_id)
         if sync.created:

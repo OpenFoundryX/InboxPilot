@@ -14,6 +14,7 @@ avoid. Classification therefore knows nothing about drafting any more.
 """
 
 from core.logging import get_logger
+from services.billing.gate import mail_gate_open
 from services.classify.apply import classify_and_label
 from workers.celery_app import celery_app
 
@@ -34,6 +35,13 @@ def classify_new_email(
     snippet: str | None = None,
     thread_id: str | None = None,
 ) -> dict:
+
+    # Work can already be queued when entitlement lapses — the poller enqueued
+    # this before the trial expired. Checked here so the last few messages of a
+    # lapsed account are dropped rather than labelled.
+    if not mail_gate_open(user_id):
+        log.info("classify.skipped_gated", user_id=user_id, message_id=message_id)
+        return {"skipped": "gated", "user_id": user_id, "message_id": message_id}
 
     log.info(f"Classifying new email for user {user_id} with message_id {message_id}")
     label = classify_and_label(

@@ -15,7 +15,7 @@ import html
 import re
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 
 from core.logging import get_logger
 
@@ -47,6 +47,51 @@ def headers(payload: dict) -> dict[str, str]:
         if name and name not in out:
             out[name] = header.get("value") or ""
     return out
+
+
+# Recipient fields, in the order a reader would list them. Bcc is included
+# because the sender's own copy of a message keeps it, and "did I send this to
+# myself" has to be true when the only self-address is there.
+_RECIPIENT_HEADERS = ("to", "cc", "bcc")
+
+
+def canonical_address(value: str) -> str:
+    """One address, reduced to what identifies the mailbox.
+
+    Takes either a bare address or a full `Name <addr>` header value: strips
+    the display name, lowercases, and drops any `+tag` — so
+    `"Nilesh" <Nilesh+inboxos@Chronon.co.in>` and `nilesh@chronon.co.in` compare
+    equal. That plus-tag rule is not cosmetic: the assistant sends from the
+    user's `+inboxos` alias, so mail addressed to it is mail addressed to them.
+
+    Returns "" for anything without an `@`, which is what group syntax
+    (`undisclosed-recipients:;`) and a stray display name parse to.
+    """
+    address = parseaddr(value)[1].strip().lower()
+    local, sep, domain = address.partition("@")
+    if not sep or not local or not domain:
+        return ""
+    return f"{local.split('+', 1)[0]}@{domain}"
+
+
+def recipient_addresses(header_map: dict[str, str]) -> list[str]:
+    """Every canonical address this message was addressed to (To + Cc + Bcc)."""
+    # Empty values are dropped before parsing, not after: `getaddresses` is
+    # strict from 3.13 on and returns a single empty pair for the whole batch if
+    # any element is malformed — and a missing Cc reads as an empty string.
+    raw = [value for name in _RECIPIENT_HEADERS if (value := header_map.get(name, "").strip())]
+    out: list[str] = []
+    for _, address in getaddresses(raw):
+        canonical = canonical_address(address)
+        if canonical and canonical not in out:
+            out.append(canonical)
+    return out
+
+
+def addressed_to(header_map: dict[str, str], *addresses: str | None) -> bool:
+    """Whether any of `addresses` is a recipient of this message."""
+    recipients = set(recipient_addresses(header_map))
+    return any(canonical_address(a) in recipients for a in addresses if a)
 
 
 def decode_body(part: dict) -> str:
