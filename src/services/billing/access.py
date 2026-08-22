@@ -5,11 +5,15 @@ rule is how a locked account keeps getting billable work done.
 
 BILLING DISABLED (temporary, for testing) — `resolve_access` and
 `effective_plan_id` below are short-circuited so the product runs without a
-subscription. Every paywall in the app funnels through these two: the 402 on
+subscription. Every *entitlement* check funnels through these two: the 402 on
 `require_entitled`, the per-feature checks in `entitlements.check`, and the mail
-pipeline's own `may_process_mail`. Restoring payments means deleting the two
-early returns and uncommenting the bodies underneath them — nothing else was
-changed, and Razorpay checkout and its webhooks still run.
+pipeline's own `may_process_mail`. They are not the only paywall, though — the
+web app's `dashboard/layout.tsx` gates on `subscription_started`, which asks
+"was a mandate ever signed", not "is this account entitled", so it is
+short-circuited separately in `api.v1.billing._subscription_started`. Restoring
+payments means deleting the early returns in all three and uncommenting the
+bodies underneath them — nothing else was changed, and Razorpay checkout and
+its webhooks still run.
 """
 
 from datetime import datetime
