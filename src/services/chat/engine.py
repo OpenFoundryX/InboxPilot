@@ -93,6 +93,7 @@ def _nudge(command: str, message: str) -> str:
     prefill = f"/{command} {' '.join(message.split())[:_NUDGE_MESSAGE_CAP]}".rstrip()
     return NUDGE_TEMPLATE.format(prefill=prefill)
 
+
 _CHAT_ANSWER_SYS = ANSWER_RULES + (
     "\n\nThis is a live chat, not an email: do NOT sign off, and do not repeat the "
     "user's question back to them. The sources are also listed separately beneath "
@@ -140,12 +141,15 @@ async def _stream_completion(
     )
     async for chunk in stream:
         if usage := getattr(chunk, "usage", None):
-            yield EV_USAGE, {
-                "model": model,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "total_tokens": usage.total_tokens,
-            }
+            yield (
+                EV_USAGE,
+                {
+                    "model": model,
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                },
+            )
             continue
         if not chunk.choices:
             continue
@@ -199,9 +203,7 @@ async def stream_answer(
         yield event
 
 
-async def stream_smalltalk(
-    message: str, history: list[dict]
-) -> AsyncIterator[tuple[str, dict]]:
+async def stream_smalltalk(message: str, history: list[dict]) -> AsyncIterator[tuple[str, dict]]:
     """Yield events for a message about the assistant itself, mailbox untouched."""
     async for event in _stream_completion(_CHAT_SMALLTALK_SYS, _replayed(history), message):
         yield event
@@ -289,9 +291,10 @@ async def _command_events(
         # A strict slash rule means saying so. Falling through to an answer
         # would silently swallow a change the user explicitly asked for.
         log.info("chat.slash_no_actions", user_id=user_id, name=command.name)
-        yield EV_TOKEN, {
-            "text": f"I couldn't work out what to change from that. Try:\n\n`{command.usage}`"
-        }
+        yield (
+            EV_TOKEN,
+            {"text": f"I couldn't work out what to change from that. Try:\n\n`{command.usage}`"},
+        )
         return
 
     log.info("chat.actions_proposed", user_id=user_id, name=command.name, count=len(proposed))

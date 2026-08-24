@@ -10,9 +10,7 @@ from models.mailman import MailmanSettings, VipRule
 
 
 async def get_or_create_settings(db: AsyncSession, user_id: uuid.UUID) -> MailmanSettings:
-    row = await db.scalar(
-        select(MailmanSettings).where(MailmanSettings.user_id == user_id)
-    )
+    row = await db.scalar(select(MailmanSettings).where(MailmanSettings.user_id == user_id))
     if row is None:
         row = MailmanSettings(user_id=user_id, timezone=app_settings.MAILMAN_DEFAULT_TZ)
         db.add(row)
@@ -30,7 +28,5 @@ async def get_or_create_vip(db: AsyncSession, user_id: uuid.UUID) -> VipRule:
 
 
 async def list_active_settings(db: AsyncSession) -> list[MailmanSettings]:
-    result = await db.scalars(
-        select(MailmanSettings).where(MailmanSettings.is_active.is_(True))
-    )
+    result = await db.scalars(select(MailmanSettings).where(MailmanSettings.is_active.is_(True)))
     return list(result)

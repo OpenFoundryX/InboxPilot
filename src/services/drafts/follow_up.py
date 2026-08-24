@@ -51,9 +51,7 @@ def _latest_inbound_by_thread(emails: list[EmailSummary]) -> dict[str, datetime]
     return latest
 
 
-def find_quiet_threads(
-    user_id: str, days: int
-) -> list[tuple[EmailSummary, int]]:
+def find_quiet_threads(user_id: str, days: int) -> list[tuple[EmailSummary, int]]:
     """Sent messages awaiting a reply, newest first, paired with days waited."""
     # `-label:DRAFTED_LABEL` keeps a thread from being nudged again every day.
     # Nothing about drafts is stored, so this exclusion is the only record that

@@ -104,7 +104,9 @@ def to_html(markdown: str) -> str:
         if h:
             flush_para()
             flush_list()
-            blocks.append(f'<p style="{_P}"><strong style="{_STRONG}">{_inline(h.group(1))}</strong></p>')
+            blocks.append(
+                f'<p style="{_P}"><strong style="{_STRONG}">{_inline(h.group(1))}</strong></p>'
+            )
             continue
 
         flush_list()

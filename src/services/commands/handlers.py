@@ -166,9 +166,7 @@ async def execute(db: AsyncSession, uid: uuid.UUID, action: dict) -> str:
 
     if atype == "manage_routine":
         rtype = action.get("routine") or ROUTINE_BRIEFING
-        row = await db.scalar(
-            select(Routine).where(Routine.user_id == uid, Routine.type == rtype)
-        )
+        row = await db.scalar(select(Routine).where(Routine.user_id == uid, Routine.type == rtype))
         if row is None:
             row = Routine(user_id=uid, type=rtype)
             db.add(row)

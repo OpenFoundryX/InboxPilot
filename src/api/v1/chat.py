@@ -218,9 +218,7 @@ def _friendly_error(exc: Exception) -> str:
 
 
 @router.post("/messages/{message_id}/confirm", response_model=MessageRead)
-async def confirm(
-    message_id: uuid.UUID, payload: ConfirmRequest, user: CurrentUser, db: DbSession
-):
+async def confirm(message_id: uuid.UUID, payload: ConfirmRequest, user: CurrentUser, db: DbSession):
     """Execute (or dismiss) the actions proposed by an assistant message."""
     message = await store.get_message_for_user(db, user.id, message_id)
     if message is None:

@@ -54,7 +54,9 @@ async def issue_tokens(db: AsyncSession, user: User) -> tuple[str, str]:
 async def rotate_refresh_token(db: AsyncSession, raw_refresh: str) -> tuple[str, str] | None:
     """Validate + rotate. Returns new (access, refresh) or None if invalid."""
 
-    row = await db.scalar(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh)))
+    row = await db.scalar(
+        select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh))
+    )
 
     if row is None or row.revoked or row.expires_at < datetime.now(timezone.utc):
         return None

@@ -18,8 +18,12 @@ class User(UUIDMixin, TimestampMixin, Base):
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
-    outlook_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    google_sub: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
+    outlook_sub: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

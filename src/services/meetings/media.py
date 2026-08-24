@@ -67,9 +67,7 @@ def validate(content_type: str, size_bytes: int) -> str:
     """
     normalized = (content_type or "").split(";")[0].strip().lower()
     if not normalized.startswith(ALLOWED_PREFIXES):
-        raise MediaRejected(
-            f"{normalized or 'That file type'} isn't audio or video"
-        )
+        raise MediaRejected(f"{normalized or 'That file type'} isn't audio or video")
     if size_bytes <= 0:
         raise MediaRejected("That file is empty")
     if size_bytes > settings.MEDIA_UPLOAD_MAX_BYTES:
@@ -118,9 +116,7 @@ async def reserve(
     bucket with nothing pointing at them.
     """
     normalized = validate(content_type, size_bytes)
-    key = build_key(
-        meeting.user_id, meeting.id, content_type=normalized, filename=filename
-    )
+    key = build_key(meeting.user_id, meeting.id, content_type=normalized, filename=filename)
     presigned = await run_in_threadpool(
         get_storage().presign_put,
         key,
@@ -146,9 +142,7 @@ async def reserve_for_live(db: AsyncSession, meeting: Meeting):
     used when it stops, so the ordinary hour would strand anyone whose call ran
     long, at the one moment where failing loses the recording entirely.
     """
-    key = build_key(
-        meeting.user_id, meeting.id, content_type=LIVE_CONTENT_TYPE, filename=None
-    )
+    key = build_key(meeting.user_id, meeting.id, content_type=LIVE_CONTENT_TYPE, filename=None)
     presigned = await run_in_threadpool(
         get_storage().presign_put,
         key,

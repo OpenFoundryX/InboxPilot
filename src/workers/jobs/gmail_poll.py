@@ -96,9 +96,7 @@ def poll_all() -> dict:
 
         user_ids = list_pollable_user_ids()
         for index, user_id in enumerate(user_ids):
-            poll_user.apply_async(
-                (user_id,), countdown=index % POLL_WINDOW_SECONDS
-            )
+            poll_user.apply_async((user_id,), countdown=index % POLL_WINDOW_SECONDS)
         return {"users": len(user_ids)}
 
 
@@ -368,9 +366,7 @@ def _guard(user_id: str, message_id: str, is_command: bool) -> bool | None:
     return True
 
 
-def _enqueue(
-    user_id: str, message: dict, label_ids: list[str], account_email: str | None
-) -> bool:
+def _enqueue(user_id: str, message: dict, label_ids: list[str], account_email: str | None) -> bool:
     """Hand one message to the task that owns it. Returns whether we did."""
     payload = message.get("payload") or {}
     header_map = headers(payload)

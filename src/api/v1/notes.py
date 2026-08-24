@@ -94,16 +94,12 @@ async def save_note(
 
     if _is_blank(body):
         await db.execute(
-            delete(DailyNote).where(
-                DailyNote.user_id == user.id, DailyNote.note_date == note_date
-            )
+            delete(DailyNote).where(DailyNote.user_id == user.id, DailyNote.note_date == note_date)
         )
         return DailyNoteRead(note_date=note_date, body="", updated_at=None)
 
     row = await db.scalar(
-        select(DailyNote).where(
-            DailyNote.user_id == user.id, DailyNote.note_date == note_date
-        )
+        select(DailyNote).where(DailyNote.user_id == user.id, DailyNote.note_date == note_date)
     )
     if row is None:
         row = DailyNote(user_id=user.id, note_date=note_date, body=body)

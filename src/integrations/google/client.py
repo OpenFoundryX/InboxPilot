@@ -141,9 +141,7 @@ def google_request(
             continue
 
         if status == 429 or (status == 403 and reason in _RATE_REASONS):
-            raise GoogleRateLimited(
-                f"{method} {url}: {message}", status_code=status, reason=reason
-            )
+            raise GoogleRateLimited(f"{method} {url}: {message}", status_code=status, reason=reason)
 
         raise GoogleAPIError(f"{method} {url}: {message}", status_code=status, reason=reason)
 
@@ -194,7 +192,9 @@ def _sleep(attempt: int, reason: str, user_id: str, response: httpx.Response | N
     # moment retries at the same moment and re-creates the burst it is backing
     # off from.
     wait = random.uniform(0, delay)
-    log.warning("google.retry", user_id=user_id, reason=reason, attempt=attempt + 1, wait=round(wait, 2))
+    log.warning(
+        "google.retry", user_id=user_id, reason=reason, attempt=attempt + 1, wait=round(wait, 2)
+    )
     time.sleep(wait)
 
 

@@ -123,9 +123,7 @@ async def google_callback(
         # for; the failure is ours. Saying "try again" would send them round
         # the same loop forever, so this reports a server fault instead.
         log.exception("google.callback_store_failed", user_id=user_id)
-        return RedirectResponse(
-            f"{landing}?connected=0&reason=server_error", status_code=302
-        )
+        return RedirectResponse(f"{landing}?connected=0&reason=server_error", status_code=302)
 
     # Deliberately does NOT start the mailbox sync. Connecting is consent to
     # read the mailbox, not permission to start working in it, and this
@@ -187,9 +185,7 @@ async def _grant_matches_user(db: DbSession, user_id: str, google_sub: str) -> b
 async def calendar_status(user: CurrentUser) -> CalendarStatus:
     """Whether the user's grant covers Google Calendar."""
     state = await run_in_threadpool(google_credentials.get_connection, str(user.id))
-    connected = bool(
-        state and not state.revoked and CALENDAR_REQUIRED_SCOPES <= state.scopes
-    )
+    connected = bool(state and not state.revoked and CALENDAR_REQUIRED_SCOPES <= state.scopes)
     return CalendarStatus(connected=connected)
 
 
@@ -209,5 +205,3 @@ async def _connect_url(user: User) -> str:
     state = secrets.token_urlsafe(32)
     await redis_client.set(f"{_STATE_PREFIX}{state}", str(user.id), ex=_STATE_TTL_SECONDS)
     return google_oauth.build_connect_url(state, login_hint=user.email)
-
-

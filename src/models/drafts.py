@@ -152,4 +152,3 @@ class DraftFile(UUIDMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:
         return f"<DraftFile {self.filename} purpose={self.purpose}>"
-

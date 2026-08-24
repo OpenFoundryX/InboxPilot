@@ -57,9 +57,7 @@ def _settings_read(row) -> SchedulingSettingsRead:
 
 
 def _event_read(row: SchedulingEventType, profile_slug: str) -> EventTypeRead:
-    return EventTypeRead.model_validate(row).model_copy(
-        update={"profile_slug": profile_slug}
-    )
+    return EventTypeRead.model_validate(row).model_copy(update={"profile_slug": profile_slug})
 
 
 # --------------------------------------------------------------------------
@@ -128,9 +126,7 @@ async def create_event_type(
         id=uuid.uuid4(),
         user_id=user.id,
         slug=slug,
-        questions=questions.normalise_definitions(
-            [q.model_dump() for q in payload.questions]
-        ),
+        questions=questions.normalise_definitions([q.model_dump() for q in payload.questions]),
         **payload.model_dump(exclude={"slug", "questions"}),
     )
     db.add(row)
@@ -296,9 +292,7 @@ async def cancel_booking(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Booking not found")
     profile = await store.get_or_create_settings(db, user)
-    return await booking_service.cancel(
-        db, row, profile, user, by="host", reason=payload.reason
-    )
+    return await booking_service.cancel(db, row, profile, user, by="host", reason=payload.reason)
 
 
 @router.get("/blockers")
@@ -317,7 +311,4 @@ async def calendar_blockers(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Calendar blockers are temporarily unavailable",
         ) from exc
-    return [
-        {"starts_at": start.isoformat(), "ends_at": end.isoformat()}
-        for start, end in windows
-    ]
+    return [{"starts_at": start.isoformat(), "ends_at": end.isoformat()} for start, end in windows]

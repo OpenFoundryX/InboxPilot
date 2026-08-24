@@ -43,7 +43,6 @@ async def exchange_code_for_profile(code: str, code_verifier: str) -> dict:
         resp.raise_for_status()
         raw_id_token = resp.json()["id_token"]
 
-
     info = await asyncio.to_thread(
         google_id_token.verify_oauth2_token,
         raw_id_token,

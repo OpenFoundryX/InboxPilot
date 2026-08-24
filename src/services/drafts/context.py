@@ -116,9 +116,7 @@ async def _scheduling_link(db: AsyncSession, user_id: uuid.UUID) -> str | None:
     expressed as the link being absent — the prompt then has nothing to
     conditionally suppress.
     """
-    row = await db.scalar(
-        select(SchedulingSettings).where(SchedulingSettings.user_id == user_id)
-    )
+    row = await db.scalar(select(SchedulingSettings).where(SchedulingSettings.user_id == user_id))
     if row is None or not row.enabled or not row.include_link_in_drafts:
         return None
     return f"{app_settings.FRONTEND_BASE_URL}/schedule/{row.slug}"

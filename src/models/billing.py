@@ -76,9 +76,7 @@ class Subscription(UUIDMixin, TimestampMixin, Base):
 
     # Null until the user completes checkout. Backfilled accounts trial without
     # ever touching Razorpay, so neither id can be required.
-    razorpay_customer_id: Mapped[str | None] = mapped_column(
-        String(64), index=True, nullable=True
-    )
+    razorpay_customer_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     razorpay_subscription_id: Mapped[str | None] = mapped_column(
         String(64), index=True, nullable=True
     )

@@ -16,13 +16,9 @@ MAX_MEETINGS = 5
 MAX_ACTIONS_EACH = 3
 
 
-async def meetings_section(
-    db: AsyncSession, user_id: uuid.UUID, *, since_hours: int = 24
-) -> str:
+async def meetings_section(db: AsyncSession, user_id: uuid.UUID, *, since_hours: int = 24) -> str:
     """Return a briefing section for recently summarized meetings, or ""."""
-    meetings = await recent_delivered(
-        db, user_id, since_hours=since_hours, limit=MAX_MEETINGS
-    )
+    meetings = await recent_delivered(db, user_id, since_hours=since_hours, limit=MAX_MEETINGS)
     if not meetings:
         return ""
 

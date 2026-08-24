@@ -92,7 +92,7 @@ class Settings(BaseSettings):
                 return value
         for prefix in ("postgresql://", "postgres://"):
             if value.startswith(prefix):
-                return "postgresql+asyncpg://" + value[len(prefix):]
+                return "postgresql+asyncpg://" + value[len(prefix) :]
         return value
 
     CELERY_BROKER_URL: str = "amqp://inboxos:inboxos@rabbitmq:5672//"
@@ -120,7 +120,6 @@ class Settings(BaseSettings):
     # here, so it must match the redirect URI registered in the Cloud console.
     PUBLIC_BASE_URL: str = "http://localhost:8000"
     MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
-
 
     MEETING_BOT_PROVIDER: str = "recall"
     RECALL_API_BASE: str = "https://us-east-1.recall.ai"
@@ -162,7 +161,6 @@ class Settings(BaseSettings):
     # Transcription for media Recall never saw. Its bots transcribe their own
     # calls; an uploaded file or a browser recording has to be transcribed here.
     TRANSCRIBE_MODEL: str = "gpt-4o-transcribe"
-
 
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""

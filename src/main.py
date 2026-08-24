@@ -35,7 +35,7 @@ def _warn_on_broken_google_config() -> None:
             detail=(
                 "GOOGLE_TOKEN_ENCRYPTION_KEYS is unset — connecting a Google "
                 "account WILL fail at the final step. Generate a key with: "
-                "python -c \"from cryptography.fernet import Fernet; "
+                'python -c "from cryptography.fernet import Fernet; '
                 'print(Fernet.generate_key().decode())"'
             ),
         )

@@ -388,9 +388,7 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
 
     plan = get_plan(payload.plan_id)
     amount = (
-        plan.annual_price_cents
-        if payload.interval == INTERVAL_ANNUAL
-        else plan.monthly_price_cents
+        plan.annual_price_cents if payload.interval == INTERVAL_ANNUAL else plan.monthly_price_cents
     )
     return CheckoutOut(
         subscription_id=created["id"],
@@ -408,7 +406,6 @@ async def cancel(user: CurrentUser, db: Db) -> SubscriptionOut:
     sub = await get_subscription(db, user.id)
     if not sub or not sub.razorpay_subscription_id:
         raise HTTPException(status.HTTP_409_CONFLICT, "No active subscription to cancel.")
-
 
     at_cycle_end = sub.status in {STATUS_ACTIVE, STATUS_PENDING}
     razorpay_client.cancel_subscription(

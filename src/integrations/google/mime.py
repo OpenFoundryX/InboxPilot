@@ -128,7 +128,7 @@ def _charset(part: dict) -> str | None:
             value = header.get("value") or ""
             if "charset=" in value.lower():
                 charset = value.lower().split("charset=", 1)[1]
-                return charset.split(";")[0].strip().strip('"\'') or None
+                return charset.split(";")[0].strip().strip("\"'") or None
     return None
 
 

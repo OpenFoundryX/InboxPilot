@@ -41,9 +41,7 @@ async def scan_deadlines(db, user_id: str, tz: str, lead_hours: int = 24) -> int
         if not e.id:
             continue
         # Skip if we already made a reminder from this message.
-        exists = await db.scalar(
-            select(Reminder).where(Reminder.source_message_id == e.id)
-        )
+        exists = await db.scalar(select(Reminder).where(Reminder.source_message_id == e.id))
         if exists:
             continue
 
@@ -56,7 +54,10 @@ async def scan_deadlines(db, user_id: str, tz: str, lead_hours: int = 24) -> int
                 model=settings.OPENAI_MODEL,
                 temperature=0,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": _SYS}, {"role": "user", "content": content}],
+                messages=[
+                    {"role": "system", "content": _SYS},
+                    {"role": "user", "content": content},
+                ],
             )
             data = json.loads(resp.choices[0].message.content or "{}")
         except Exception:

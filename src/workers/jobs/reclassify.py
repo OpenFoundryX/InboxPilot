@@ -22,9 +22,7 @@ def reclassify(user_id: str, days: int = 7, max_results: int | None = None) -> d
         return {"user_id": user_id, "queued": 0, "skipped_reason": "disabled"}
 
     emails = gmail.fetch_recent_emails(user_id, days=days, max_results=max_results)
-    queued = backfill.queue_unlabelled(
-        user_id, emails, [c.gmail_label for c in config.categories]
-    )
+    queued = backfill.queue_unlabelled(user_id, emails, [c.gmail_label for c in config.categories])
 
     log.info("reclassify.queued", user_id=user_id, days=days, fetched=len(emails), queued=queued)
     return {"user_id": user_id, "fetched": len(emails), "queued": queued}

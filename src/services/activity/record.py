@@ -37,9 +37,7 @@ def _record(user_id: str, kind: str, ref_id: str, category_key: str | None) -> N
     mail successfully, re-doing Gmail work to fix a counter.
     """
     try:
-        run_async(
-            with_worker_session(lambda db: _insert(db, user_id, kind, ref_id, category_key))
-        )
+        run_async(with_worker_session(lambda db: _insert(db, user_id, kind, ref_id, category_key)))
     except Exception:
         log.exception("activity.record_failed", user_id=user_id, kind=kind, ref_id=ref_id)
 

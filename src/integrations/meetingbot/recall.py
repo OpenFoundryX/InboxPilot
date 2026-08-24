@@ -191,9 +191,7 @@ class RecallProvider:
         # Waiting for that to change is waiting for something that already
         # finished not happening.
         if not (data.get("recordings") or []):
-            raise MeetingNotRecorded(
-                f"Bot {bot_id} finished without recording anything"
-            )
+            raise MeetingNotRecorded(f"Bot {bot_id} finished without recording anything")
 
         url = (
             _first_recording(data)

@@ -200,14 +200,10 @@ async def reclassify(
     settings_row.last_reclassify_at = datetime.now(UTC)
     task = reclassify_task.delay(str(user.id), payload.days, payload.max_results)
 
-    return ReclassifyResponse(
-        task_id=task.id, days=payload.days, max_results=payload.max_results
-    )
+    return ReclassifyResponse(task_id=task.id, days=payload.days, max_results=payload.max_results)
 
 
-@router.post(
-    "/categories", response_model=CategoryRead, status_code=status.HTTP_201_CREATED
-)
+@router.post("/categories", response_model=CategoryRead, status_code=status.HTTP_201_CREATED)
 async def create_category(
     payload: CategoryCreate, user: CurrentUser, db: DbSession
 ) -> EmailCategory:
@@ -315,9 +311,7 @@ async def get_rules(user: CurrentUser, db: DbSession) -> list[CategorizationRule
 
 
 @router.post("/rules", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
-async def create_rule(
-    payload: RuleCreate, user: CurrentUser, db: DbSession
-) -> CategorizationRule:
+async def create_rule(payload: RuleCreate, user: CurrentUser, db: DbSession) -> CategorizationRule:
     await _require_custom_categories(db, user)
     await get_or_create_categories(db, user.id)
     await _check_rule_target(db, user.id, payload.action, payload.category_key)

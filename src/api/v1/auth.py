@@ -72,7 +72,9 @@ async def google_login() -> RedirectResponse:
 
 
 @router.get("/google/callback")
-async def google_callback(request: Request, db: DbSession, code: str, state: str) -> RedirectResponse:
+async def google_callback(
+    request: Request, db: DbSession, code: str, state: str
+) -> RedirectResponse:
     """Handle Google's redirect: verify state, exchange code, log the user in."""
     cookie_state = request.cookies.get(STATE_COOKIE)
     verifier = request.cookies.get(VERIFIER_COOKIE)
@@ -82,16 +84,12 @@ async def google_callback(request: Request, db: DbSession, code: str, state: str
     try:
         profile = await service.exchange_code_for_profile(code, verifier)
     except Exception as exc:  # httpx errors, missing id_token, unverified email
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Google authentication failed"
-        ) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Google authentication failed") from exc
 
     user = await oauth.upsert_user_from_google(db, profile)
     access, refresh = await oauth.issue_tokens(db, user)
 
-    resp = RedirectResponse(
-        settings.POST_LOGIN_REDIRECT_URL, status_code=status.HTTP_303_SEE_OTHER
-    )
+    resp = RedirectResponse(settings.POST_LOGIN_REDIRECT_URL, status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookies(resp, access, refresh)
     resp.delete_cookie(STATE_COOKIE, path="/")
     resp.delete_cookie(VERIFIER_COOKIE, path="/")

@@ -15,7 +15,11 @@ def double_bookings_digest(user_id: str, email: str, tz: str, days: int = 1) -> 
     if not clashes:
         return 0
     lines = [f"  • “{a}”  ⟷  “{b}”" for a, b in clashes]
-    body = "Heads-up — these meetings overlap:\n\n" + "\n".join(lines) + "\n\nYou may want to move one.\n\n— InboxOS"
+    body = (
+        "Heads-up — these meetings overlap:\n\n"
+        + "\n".join(lines)
+        + "\n\nYou may want to move one.\n\n— InboxOS"
+    )
     send_to_inbox(user_id, email, f"⚠️ {len(clashes)} calendar clash(es) ahead", body)
     log.info("calendar.double_bookings_sent", user_id=user_id, count=len(clashes))
     return len(clashes)

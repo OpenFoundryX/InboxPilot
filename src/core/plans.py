@@ -18,6 +18,7 @@ Vela scheduling has no implementation to gate.
 from dataclasses import dataclass
 
 from core.config import settings
+
 # From `core.routine_slugs`, not `models.routines`: `models.billing` reads
 # `CURRENCY`/`PLAN_PRO` below for its column defaults, so importing a model
 # module from here closes a cycle. It stayed latent until `models/__init__`

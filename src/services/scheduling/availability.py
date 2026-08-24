@@ -61,9 +61,7 @@ def _decode(raw: str) -> list[Interval] | None:
         return None
 
 
-async def _cached_days(
-    user_id: uuid.UUID, days: list[date]
-) -> dict[date, list[Interval]]:
+async def _cached_days(user_id: uuid.UUID, days: list[date]) -> dict[date, list[Interval]]:
     """Whichever of these days is already cached.
 
     Cached per day rather than per requested range. Keying on the range meant

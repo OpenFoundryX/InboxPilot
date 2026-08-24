@@ -47,7 +47,7 @@ def _fernet() -> MultiFernet:
     if not keys:
         raise EncryptionUnavailable(
             "GOOGLE_TOKEN_ENCRYPTION_KEYS is not set; generate one with "
-            "`python -c \"from cryptography.fernet import Fernet; "
+            '`python -c "from cryptography.fernet import Fernet; '
             'print(Fernet.generate_key().decode())"`'
         )
     try:

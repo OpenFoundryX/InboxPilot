@@ -84,7 +84,7 @@ def _fit(transcript: str) -> str:
         return transcript
     budget = MAX_TRANSCRIPT_CHARS - len(_ELISION)
     head = int(budget * _HEAD_SHARE)
-    return f"{transcript[:head]}{_ELISION}{transcript[-(budget - head):]}"
+    return f"{transcript[:head]}{_ELISION}{transcript[-(budget - head) :]}"
 
 
 def summarize(
@@ -167,9 +167,7 @@ def _compose(data: Any) -> str:
         if not isinstance(section, dict):
             continue
         title = str(section.get("title") or "").strip()
-        bullets = [
-            str(b).strip() for b in (section.get("bullets") or []) if str(b).strip()
-        ]
+        bullets = [str(b).strip() for b in (section.get("bullets") or []) if str(b).strip()]
         # A title with nothing under it is a heading for an empty section, and
         # bullets with no title have nowhere to sit. Both are dropped rather
         # than rendered as a gap in the notes.

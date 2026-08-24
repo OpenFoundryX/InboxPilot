@@ -35,11 +35,7 @@ router = APIRouter(prefix="/mailman", tags=["mailman"])
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
-_MODES = {
-    MODE_INTERVAL, 
-    MODE_TIMES, 
-    MODE_CUSTOM_DAILY
-}
+_MODES = {MODE_INTERVAL, MODE_TIMES, MODE_CUSTOM_DAILY}
 
 
 async def _apply_hold_filter(settings: MailmanSettings, vip: VipRule) -> None:
@@ -110,11 +106,7 @@ async def stop(user: CurrentUser, db: DbSession) -> MailmanSettings:
     """
     settings = await get_or_create_settings(db, user.id)
 
-    await run_in_threadpool(
-        filters.remove_hold_filter, 
-        str(user.id), 
-        settings.gmail_filter_id
-    )
+    await run_in_threadpool(filters.remove_hold_filter, str(user.id), settings.gmail_filter_id)
 
     settings.gmail_filter_id = None
     settings.is_active = False

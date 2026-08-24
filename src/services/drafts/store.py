@@ -31,9 +31,7 @@ async def get_or_create_settings(db: AsyncSession, user_id: uuid.UUID) -> DraftS
             async with db.begin_nested():
                 await db.flush()
         except IntegrityError:
-            row = await db.scalar(
-                select(DraftSettings).where(DraftSettings.user_id == user_id)
-            )
+            row = await db.scalar(select(DraftSettings).where(DraftSettings.user_id == user_id))
             # The winner has committed by the time our INSERT was told it
             # conflicted, so the re-read always finds it.
             assert row is not None
@@ -50,9 +48,7 @@ async def list_files(
     return list(await db.scalars(stmt.order_by(DraftFile.created_at.desc())))
 
 
-async def get_file(
-    db: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUID
-) -> DraftFile | None:
+async def get_file(db: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUID) -> DraftFile | None:
     return await db.scalar(
         select(DraftFile).where(DraftFile.user_id == user_id, DraftFile.id == file_id)
     )
@@ -60,6 +56,4 @@ async def get_file(
 
 async def users_with_drafting_enabled(db: AsyncSession) -> list[DraftSettings]:
     """Every user who has opted into drafting. The sweeps decide who is due."""
-    return list(
-        await db.scalars(select(DraftSettings).where(DraftSettings.is_enabled.is_(True)))
-    )
+    return list(await db.scalars(select(DraftSettings).where(DraftSettings.is_enabled.is_(True))))

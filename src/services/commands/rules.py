@@ -37,9 +37,7 @@ def _matching_ids(user_id: str, query: str, cap: int = _MAX_MATCHES) -> list[str
     return [message_id for message_id, _ in gmail.list_message_ids(user_id, query, cap)]
 
 
-def _apply_to_existing(
-    user_id: str, query: str, add_ids: list[str], remove_ids: list[str]
-) -> int:
+def _apply_to_existing(user_id: str, query: str, add_ids: list[str], remove_ids: list[str]) -> int:
     """Apply the rule's label changes to all existing matching mail. Returns count."""
     if not query:
         return 0
@@ -104,9 +102,7 @@ def create_rule(user_id: str, action: dict) -> str:
 
     # "current and future" → also apply the same effect to mail already present.
     if action.get("apply_to_existing"):
-        applied = _apply_to_existing(
-            user_id, _criteria_to_query(criteria), add_ids, remove_ids
-        )
+        applied = _apply_to_existing(user_id, _criteria_to_query(criteria), add_ids, remove_ids)
         summary += f"; applied to {applied} existing email(s)"
 
     return summary

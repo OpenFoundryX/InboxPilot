@@ -60,9 +60,7 @@ def is_connected(user_id: str) -> bool:
 
 def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
     """Kept for signature compatibility; the grant is started from the API route."""
-    raise NotImplementedError(
-        "start the Google grant via GET /v1/integrations/google/connect"
-    )
+    raise NotImplementedError("start the Google grant via GET /v1/integrations/google/connect")
 
 
 def list_events(user_id: str, time_min: datetime, time_max: datetime) -> list[dict]:

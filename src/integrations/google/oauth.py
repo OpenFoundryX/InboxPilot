@@ -135,8 +135,7 @@ def exchange_code(code: str) -> TokenGrant:
         # background sweep would ever work again — so fail loudly here rather
         # than storing a row that breaks silently at 3am.
         raise GoogleOAuthError(
-            "Google returned no refresh token; the grant cannot be used for "
-            "background access"
+            "Google returned no refresh token; the grant cannot be used for background access"
         )
 
     info = _verify_id_token(body.get("id_token"))

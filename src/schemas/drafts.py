@@ -118,5 +118,3 @@ class DraftFilePreview(BaseModel):
     filename: str
     char_count: int
     excerpt: str
-
-
