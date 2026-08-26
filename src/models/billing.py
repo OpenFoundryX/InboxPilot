@@ -1,9 +1,10 @@
 """Subscription state and monthly usage counters.
 
 `subscriptions` mirrors Razorpay rather than owning the truth — with one
-exception. `trial_ends_at` has two writers: the subscription's `start_at` for
-users who completed checkout, and the billing backfill migration for accounts
-that predate billing and have no Razorpay customer at all. Both write the same
+exception. `trial_ends_at` has three writers: the subscription's `start_at` for
+users who completed checkout, migration f1a2b3c4d5e6 for accounts that predate
+billing and have no Razorpay customer at all, and migration c8e2f4a10b57 for
+accounts created while billing was switched off. All three write the same
 column so every reader asks one question instead of branching on account age.
 
 Razorpay's `authenticated` state means the mandate is signed but the first
