@@ -25,9 +25,9 @@ PREFIX="/inboxpilot/prod"
 [[ -f "$ENV_FILE" ]] || { echo "no such env file: $ENV_FILE" >&2; exit 1; }
 
 # Deliberately absent, because no value exists for them yet:
-# GOOGLE_PUBSUB_SA_EMAIL, GOOGLE_PUBSUB_AUDIENCE, ANTHROPIC_API_KEY,
-# RAZORPAY_WEBHOOK_SECRET. See the comment block in infra/secrets.tf for what
-# each one costs. Add a name here and to local.operator_secrets together.
+# GOOGLE_PUBSUB_SA_EMAIL, GOOGLE_PUBSUB_AUDIENCE, ANTHROPIC_API_KEY.
+# See the comment block in infra/secrets.tf for what each one costs. Add a name
+# here and to local.operator_secrets together.
 KEYS=(
   JWT_SECRET
   GOOGLE_CLIENT_ID
@@ -39,6 +39,7 @@ KEYS=(
   RECALL_WEBHOOK_SECRET
   RAZORPAY_KEY_ID
   RAZORPAY_KEY_SECRET
+  RAZORPAY_WEBHOOK_SECRET
   RAZORPAY_PLAN_STARTER_MONTHLY
   RAZORPAY_PLAN_STARTER_ANNUAL
   RAZORPAY_PLAN_PRO_MONTHLY

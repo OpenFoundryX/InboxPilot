@@ -169,9 +169,16 @@ async def razorpay_webhook(request: Request, db: DbSession) -> dict:
     unverified body must never reach the handlers. The body is read raw and
     hashed as-is; re-parsing it first would change the bytes and break every
     signature.
+
+    With no secret configured the HMAC key would be the empty string, which any
+    caller can reproduce — so an unset secret fails the request closed rather
+    than accepting forgeries quietly.
     """
     raw = await request.body()
     signature = request.headers.get("x-razorpay-signature", "")
+    if not settings.RAZORPAY_WEBHOOK_SECRET:
+        log.error("razorpay.webhook_secret_unset")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Webhook not configured")
     if not verify_signature(raw, signature, settings.RAZORPAY_WEBHOOK_SECRET):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid signature")
 
