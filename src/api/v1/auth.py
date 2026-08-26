@@ -9,9 +9,10 @@ from fastapi.responses import RedirectResponse
 
 from api.deps import DbSession
 from core.config import settings
+from core.exceptions import SignupNotInvited
 from models.users import User
 from schemas.user import UserRead
-from services.auth import oauth, service
+from services.auth import invites, oauth, service
 from services.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -86,7 +87,27 @@ async def google_callback(
     except Exception as exc:  # httpx errors, missing id_token, unverified email
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Google authentication failed") from exc
 
-    user = await oauth.upsert_user_from_google(db, profile)
+    # Asked unconditionally, and ignored on the login branch, so the callback
+    # reads as one linear flow instead of testing for the user twice. One extra
+    # SELECT per login.
+    signup_allowed = await invites.is_invited(db, profile["email"])
+    try:
+        user, created = await oauth.upsert_user_from_google(
+            db, profile, signup_allowed=signup_allowed
+        )
+    except SignupNotInvited:
+        # Same cookie cleanup as the success path: a turned-away visitor must
+        # not carry a live oauth_state into their next attempt.
+        refused = RedirectResponse(
+            f"{settings.LOGIN_URL}?error=not_invited", status_code=status.HTTP_303_SEE_OTHER
+        )
+        refused.delete_cookie(STATE_COOKIE, path="/")
+        refused.delete_cookie(VERIFIER_COOKIE, path="/")
+        return refused
+
+    if created:
+        await invites.claim(db, profile["email"], user.id)
+
     access, refresh = await oauth.issue_tokens(db, user)
 
     resp = RedirectResponse(settings.POST_LOGIN_REDIRECT_URL, status_code=status.HTTP_303_SEE_OTHER)

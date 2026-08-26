@@ -45,6 +45,7 @@ locals {
     { name = "FRONTEND_BASE_URL", value = var.frontend_origin },
     { name = "GOOGLE_REDIRECT_URI", value = local.google_redirect_uri },
     { name = "POST_LOGIN_REDIRECT_URL", value = local.post_login_redirect_url },
+    { name = "LOGIN_URL", value = local.login_url },
 
     # Real AWS S3: both endpoints blank. s3.py:45 refuses the half-configured
     # case where only the public one is set, so both are pinned explicitly

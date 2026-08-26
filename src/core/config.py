@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     GOOGLE_REDIRECT_URI: str = "http://localhost:3000/api/auth/google/callback"
     POST_LOGIN_REDIRECT_URL: str = "http://localhost:3000/onboarding/connect"
+    # Where to send a browser we are turning away (an uninvited signup). Set
+    # explicitly rather than derived from POST_LOGIN_REDIRECT_URL by string
+    # surgery, which would break the moment that value's path changes.
+    LOGIN_URL: str = "http://localhost:3000/login"
 
     # Comma-separated Fernet keys for the OAuth tokens in `google_connections`.
     # The first encrypts, all of them decrypt — see `core.crypto` for why the
