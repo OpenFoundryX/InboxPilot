@@ -9,7 +9,7 @@ a new user, and existing users are never asked.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.invites import InvitedEmail
@@ -46,11 +46,16 @@ async def claim(db: AsyncSession, email: str, user_id: uuid.UUID) -> None:
     which is the one fact this row exists to preserve. An address with no row is
     a silent no-op — the gate has already run by the time we get here, so
     raising would turn a bookkeeping miss into a failed login.
-    """
-    row = await db.scalar(select(InvitedEmail).where(InvitedEmail.email == normalize_email(email)))
-    if row is None or row.claimed_at is not None:
-        return
 
-    row.claimed_at = datetime.now(timezone.utc)
-    row.claimed_by_user_id = user_id
+    Uses an atomic UPDATE with a WHERE guard on claimed_at IS NULL to ensure
+    concurrent claims are safe: only one can succeed, and it keeps the first.
+    """
+    await db.execute(
+        update(InvitedEmail)
+        .where(
+            InvitedEmail.email == normalize_email(email),
+            InvitedEmail.claimed_at.is_(None),
+        )
+        .values(claimed_at=datetime.now(timezone.utc), claimed_by_user_id=user_id)
+    )
     await db.flush()
