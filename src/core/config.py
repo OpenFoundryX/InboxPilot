@@ -173,7 +173,7 @@ class Settings(BaseSettings):
     RAZORPAY_PLAN_STARTER_ANNUAL: str = ""
     RAZORPAY_PLAN_PRO_MONTHLY: str = ""
     RAZORPAY_PLAN_PRO_ANNUAL: str = ""
-    TRIAL_DAYS: int = 7
+    TRIAL_DAYS: int = 14
 
     @property
     def allowed_classifier_models(self) -> set[str]:
