@@ -7,8 +7,6 @@ running, nothing should create labels, classify mail, or install a watch.
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from models.billing import (
     STATUS_ACTIVE,
     STATUS_AUTHENTICATED,
@@ -19,12 +17,6 @@ from models.billing import (
 )
 from models.users import User
 from services.billing.access import may_process_mail
-
-# BILLING DISABLED (temporary, for testing): `services.billing.access` returns
-# "entitled" for everyone, so every subscription state below now passes. The
-# assertions are the spec of the paywall and stay here unchanged — deleting this
-# mark is part of turning payments back on.
-pytestmark = pytest.mark.skip(reason="billing gate disabled for testing")
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
