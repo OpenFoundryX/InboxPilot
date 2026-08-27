@@ -51,8 +51,7 @@ async def _sweep(db) -> dict:
                 SchedulingBooking.reminder_sent_at.is_(None),
                 SchedulingBooking.status.in_(LIVE_STATUSES),
                 SchedulingBooking.starts_at <= now + timedelta(minutes=LEAD_MINUTES),
-                SchedulingBooking.starts_at
-                >= now - timedelta(minutes=STALE_AFTER_MINUTES),
+                SchedulingBooking.starts_at >= now - timedelta(minutes=STALE_AFTER_MINUTES),
             )
         )
     )
@@ -60,9 +59,7 @@ async def _sweep(db) -> dict:
     sent = 0
     for booking in due:
         profile = await db.scalar(
-            select(SchedulingSettings).where(
-                SchedulingSettings.user_id == booking.user_id
-            )
+            select(SchedulingSettings).where(SchedulingSettings.user_id == booking.user_id)
         )
         user = await db.get(User, booking.user_id)
         # Stamp regardless of what happens below: this row has had its one

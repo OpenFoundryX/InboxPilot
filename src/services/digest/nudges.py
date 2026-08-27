@@ -85,9 +85,7 @@ def reconnect_suggestions(user_id: str, email: str, self_email: str) -> int:
     """
     old = gmail.fetch_by_query(user_id, "in:sent newer_than:120d older_than:30d", 40)
     recent = gmail.fetch_by_query(user_id, "newer_than:30d", 60)
-    recent_people = {
-        a for m in recent for a in [_address(m.sender), _address(m.to)] if a
-    }
+    recent_people = {a for m in recent for a in [_address(m.sender), _address(m.to)] if a}
 
     candidates: dict[str, str] = {}  # address -> display subject/context
     for m in old:
@@ -102,7 +100,10 @@ def reconnect_suggestions(user_id: str, email: str, self_email: str) -> int:
     if not candidates:
         return 0
 
-    lines = [f"  • {addr}" + (f" — last about \"{ctx[:40]}\"" if ctx else "") for addr, ctx in list(candidates.items())[:10]]
+    lines = [
+        f"  • {addr}" + (f' — last about "{ctx[:40]}"' if ctx else "")
+        for addr, ctx in list(candidates.items())[:10]
+    ]
     body = (
         "It's been a while since you've been in touch with these people — worth reconnecting?\n\n"
         + "\n".join(lines)

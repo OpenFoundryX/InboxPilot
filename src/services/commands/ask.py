@@ -49,16 +49,86 @@ _THREAD_FETCH_CONCURRENCY = 4
 
 # Words carrying no retrieval signal; scoring ignores them so that "what are my
 # emails about" does not score every message for containing "are".
-_STOPWORDS = frozenset({
-    "the", "and", "for", "are", "was", "were", "you", "your", "yours", "his",
-    "her", "その", "with", "from", "that", "this", "these", "those", "have",
-    "has", "had", "did", "does", "do", "any", "all", "can", "will", "would",
-    "about", "what", "when", "where", "which", "who", "whom", "why", "how",
-    "me", "my", "mine", "i", "is", "it", "its", "of", "on", "in", "to", "a",
-    "an", "at", "by", "or", "as", "be", "been", "am", "send", "sent", "email",
-    "emails", "mail", "mails", "inbox", "show", "find", "list", "get", "give",
-    "tell", "please", "recent", "latest", "last", "new",
-})
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "are",
+        "was",
+        "were",
+        "you",
+        "your",
+        "yours",
+        "his",
+        "her",
+        "その",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "have",
+        "has",
+        "had",
+        "did",
+        "does",
+        "do",
+        "any",
+        "all",
+        "can",
+        "will",
+        "would",
+        "about",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "why",
+        "how",
+        "me",
+        "my",
+        "mine",
+        "i",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "in",
+        "to",
+        "a",
+        "an",
+        "at",
+        "by",
+        "or",
+        "as",
+        "be",
+        "been",
+        "am",
+        "send",
+        "sent",
+        "email",
+        "emails",
+        "mail",
+        "mails",
+        "inbox",
+        "show",
+        "find",
+        "list",
+        "get",
+        "give",
+        "tell",
+        "please",
+        "recent",
+        "latest",
+        "last",
+        "new",
+    }
+)
 
 # Gmail operators that are meaningless without a value. The planner emits these
 # occasionally — a bare `label:` was observed in production — and Gmail does not
@@ -182,9 +252,7 @@ contain the answer, say what you found, state plainly what's missing, and sugges
 concrete next step. Never invent emails, senders, or links."""
 
 # The email surface signs off; the web chat renders a live transcript and must not.
-_ANSWER_SYS = ANSWER_RULES + (
-    "\n\nEnd your reply with a sign-off line containing only: — InboxOS"
-)
+_ANSWER_SYS = ANSWER_RULES + ("\n\nEnd your reply with a sign-off line containing only: — InboxOS")
 
 
 def _client() -> OpenAI:

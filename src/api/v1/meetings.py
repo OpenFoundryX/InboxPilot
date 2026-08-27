@@ -110,11 +110,12 @@ async def update_settings(
 async def list_meetings(user: CurrentUser, db: DbSession) -> list[Meeting]:
     """Meetings newest first — scheduled ones included, so the UI can show what's coming."""
 
-    result = await db.scalars(select(Meeting).where(
-        Meeting.user_id == user.id
-    ).order_by(
-        Meeting.starts_at.desc().nullslast(), Meeting.created_at.desc()
-    ).limit(LIST_LIMIT))
+    result = await db.scalars(
+        select(Meeting)
+        .where(Meeting.user_id == user.id)
+        .order_by(Meeting.starts_at.desc().nullslast(), Meeting.created_at.desc())
+        .limit(LIST_LIMIT)
+    )
 
     return list(result)
 
@@ -126,7 +127,8 @@ async def join_meeting(payload: JoinRequest, user: CurrentUser, db: DbSession) -
     found = find_meeting_link(payload.meeting_url)
     if not found:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "No Zoom, Google Meet, or Teams link found in that text",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "No Zoom, Google Meet, or Teams link found in that text",
         )
 
     url, platform = found
@@ -226,17 +228,13 @@ async def _meeting_for_upload(
             now - timedelta(hours=EVENT_LOOKUP_HOURS),
             now + timedelta(hours=EVENT_LOOKUP_HOURS),
         )
-        event = next(
-            (e for e in events if str(e.get("id")) == payload.calendar_event_id), None
-        )
+        event = next((e for e in events if str(e.get("id")) == payload.calendar_event_id), None)
         if event is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "That event is not on your calendar")
 
         meeting, _ = await upsert_from_event(db, user.id, event)
         if meeting.media_key:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "That meeting already has a recording"
-            )
+            raise HTTPException(status.HTTP_409_CONFLICT, "That meeting already has a recording")
         # The row keeps `source=calendar` — where it came from hasn't changed —
         # but from here it is media we host, which `media_key` is what decides.
         if payload.title:
@@ -396,9 +394,7 @@ async def delete_meeting(meeting_id: uuid.UUID, user: CurrentUser, db: DbSession
         try:
             await run_in_threadpool(get_provider().cancel_bot, meeting.bot_id)
         except MeetingBotError as exc:
-            log.warning(
-                "meetings.delete_cancel_failed", meeting_id=str(meeting_id), error=str(exc)
-            )
+            log.warning("meetings.delete_cancel_failed", meeting_id=str(meeting_id), error=str(exc))
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 f"Couldn't recall the notetaker, so the meeting was kept: {exc}",
@@ -451,9 +447,7 @@ async def enable_bot(payload: EnableBotRequest, user: CurrentUser, db: DbSession
 
     meeting, _ = await upsert_from_event(db, user.id, event)
     if meeting.status in BOT_LOCKED_STATUSES:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Too late: meeting is {meeting.status}"
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Too late: meeting is {meeting.status}")
     if meeting.starts_at and meeting.starts_at <= now:
         raise HTTPException(status.HTTP_409_CONFLICT, "That meeting has already started")
 

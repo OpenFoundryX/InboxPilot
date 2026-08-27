@@ -109,9 +109,7 @@ async def _resolve_own_media(db: AsyncSession, meeting: Meeting) -> str | None:
     page view and never the page itself or the recap job.
     """
     try:
-        url, expires_at = await run_in_threadpool(
-            get_storage().presign_get, meeting.media_key
-        )
+        url, expires_at = await run_in_threadpool(get_storage().presign_get, meeting.media_key)
     except StorageError as exc:
         log.info(
             "meetings.recording_unavailable",

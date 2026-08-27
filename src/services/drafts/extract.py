@@ -107,8 +107,7 @@ def extract_text(filename: str, data: bytes) -> str:
     """Extract plain text from an upload. Raises `ExtractionError` on bad input."""
     if len(data) > MAX_UPLOAD_BYTES:
         raise FileTooLarge(
-            f"file is {len(data) // 1_048_576} MB; the limit is "
-            f"{MAX_UPLOAD_BYTES // 1_048_576} MB"
+            f"file is {len(data) // 1_048_576} MB; the limit is {MAX_UPLOAD_BYTES // 1_048_576} MB"
         )
     if not data:
         raise NoTextFound("the file is empty")
@@ -122,8 +121,7 @@ def extract_text(filename: str, data: bytes) -> str:
         raw = _from_plain(data)
     else:
         raise UnsupportedFile(
-            f"{filename!r} is not a supported file type; upload one of "
-            f"{', '.join(SUPPORTED_EXTS)}"
+            f"{filename!r} is not a supported file type; upload one of {', '.join(SUPPORTED_EXTS)}"
         )
 
     text = _tidy(raw)

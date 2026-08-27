@@ -51,7 +51,9 @@ class Routine(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "routines"
     __table_args__ = (UniqueConstraint("user_id", "type", name="uq_routine_user_type"),)
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     run_time: Mapped[str] = mapped_column(String(5), default="08:00")  # "HH:MM" local

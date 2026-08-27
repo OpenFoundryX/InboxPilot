@@ -24,6 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 
 from api.deps import DbSession
+from core.config import settings
 from core.idempotency import claim_event
 from core.logging import get_logger
 from integrations.google import credentials as google_credentials
@@ -47,7 +48,7 @@ from models.meetings import (
     STATUS_RECORDING,
     Meeting,
 )
-from services.billing.webhooks import handle_event
+from services.billing.webhooks import handle_event, verify_signature
 from workers.jobs.gmail_poll import poll_user
 from workers.jobs.process_meeting import process_meeting
 
@@ -168,15 +169,18 @@ async def razorpay_webhook(request: Request, db: DbSession) -> dict:
     unverified body must never reach the handlers. The body is read raw and
     hashed as-is; re-parsing it first would change the bytes and break every
     signature.
+
+    With no secret configured the HMAC key would be the empty string, which any
+    caller can reproduce — so an unset secret fails the request closed rather
+    than accepting forgeries quietly.
     """
     raw = await request.body()
-    # BILLING DISABLED (temporary, for testing): the signature check is
-    # commented out, so this public route currently trusts its caller. Restore
-    # it — and the docstring's claim above becomes true again — before this
-    # takes real Razorpay traffic.
-    signature = request.headers.get("x-razorpay-signature", "")  # noqa: F841
-    # if not verify_signature(raw, signature, settings.RAZORPAY_WEBHOOK_SECRET):
-    #     raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid signature")
+    signature = request.headers.get("x-razorpay-signature", "")
+    if not settings.RAZORPAY_WEBHOOK_SECRET:
+        log.error("razorpay.webhook_secret_unset")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Webhook not configured")
+    if not verify_signature(raw, signature, settings.RAZORPAY_WEBHOOK_SECRET):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid signature")
 
     event = json.loads(raw)
 

@@ -71,7 +71,9 @@ def compose_briefing(
     subject = f"☀️ Briefing — {date_str}"
 
     if total == 0 and not extra.strip():
-        body = f"{greeting}! Nothing new to brief you on for {date_str}. Enjoy the calm.\n\n— InboxOS"
+        body = (
+            f"{greeting}! Nothing new to brief you on for {date_str}. Enjoy the calm.\n\n— InboxOS"
+        )
         return subject, body
 
     if total == 0:

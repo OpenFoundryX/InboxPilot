@@ -32,6 +32,7 @@ from models import categorization as categorization  # noqa: F401
 from models import chat as chat  # noqa: F401
 from models import drafts as drafts  # noqa: F401
 from models import google as google  # noqa: F401
+from models import invites as invites  # noqa: F401
 from models import mailman as mailman  # noqa: F401
 from models import meetings as meetings  # noqa: F401
 from models import notes as notes  # noqa: F401

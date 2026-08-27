@@ -36,7 +36,9 @@ def normalise_definitions(questions: list[dict]) -> list[dict]:
             "required": bool(question.get("required")),
         }
         if kind == "select":
-            options = [str(o).strip()[:120] for o in (question.get("options") or []) if str(o).strip()]
+            options = [
+                str(o).strip()[:120] for o in (question.get("options") or []) if str(o).strip()
+            ]
             # A select with nothing to select from is a text box wearing a hat.
             if not options:
                 entry["type"] = "text"

@@ -29,7 +29,9 @@ def compose_reply(subject: str | None, body: str | None, results: list[str] | No
     if not settings.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    parts = [f"The user emailed you.\nSubject: {subject or '(no subject)'}\n\n{(body or '')[:3000]}"]
+    parts = [
+        f"The user emailed you.\nSubject: {subject or '(no subject)'}\n\n{(body or '')[:3000]}"
+    ]
     if results:
         parts.append("\n\nActions you just performed:\n" + "\n".join(f"- {r}" for r in results))
 

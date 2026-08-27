@@ -59,9 +59,7 @@ def process_meeting(self, meeting_id: str) -> dict:
             # "Processing" indefinitely — a meeting that looks busy forever is
             # worse than one that says it failed.
             log.error("meetings.process_gave_up", meeting_id=meeting_id, error=reason)
-            return run_async(
-                with_worker_session(lambda db: _fail(db, meeting_id, reason))
-            )
+            return run_async(with_worker_session(lambda db: _fail(db, meeting_id, reason)))
 
 
 async def _fail(db, meeting_id: str, reason: str) -> dict:
@@ -122,9 +120,7 @@ def _backfill_from_provider(meeting: Meeting) -> None:
     # link has only the provisional stamp written when it was requested, and
     # the moment recording actually began is strictly better than that — so
     # here the provider wins.
-    if details.started_at and (
-        meeting.starts_at is None or meeting.calendar_event_id is None
-    ):
+    if details.started_at and (meeting.starts_at is None or meeting.calendar_event_id is None):
         meeting.starts_at = details.started_at
 
 

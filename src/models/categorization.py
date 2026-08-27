@@ -74,8 +74,7 @@ BUILTIN_CATEGORIES: tuple[BuiltinCategory, ...] = (
         gmail_label="to do",
         display_name="To do",
         description=(
-            "Needs an action or reply from me; a real request, task, or question "
-            "directed at me."
+            "Needs an action or reply from me; a real request, task, or question directed at me."
         ),
         color_bg="#fb4c2f",
         color_text="#ffffff",
@@ -107,8 +106,7 @@ BUILTIN_CATEGORIES: tuple[BuiltinCategory, ...] = (
         gmail_label="fyi",
         display_name="FYI",
         description=(
-            "Informational and relevant, from a person or team, but needs no "
-            "action from me."
+            "Informational and relevant, from a person or team, but needs no action from me."
         ),
         color_bg="#16a766",
         color_text="#ffffff",
@@ -117,9 +115,7 @@ BUILTIN_CATEGORIES: tuple[BuiltinCategory, ...] = (
         key="marketing",
         gmail_label="marketing",
         display_name="Marketing",
-        description=(
-            "Promotional or sales: newsletters, product offers, campaigns, cold pitches."
-        ),
+        description=("Promotional or sales: newsletters, product offers, campaigns, cold pitches."),
         color_bg="#fad165",
         color_text="#000000",
     ),

@@ -27,9 +27,7 @@ from models.base import Base, TimestampMixin, UUIDMixin
 
 class DailyNote(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "daily_notes"
-    __table_args__ = (
-        UniqueConstraint("user_id", "note_date", name="uq_daily_note_user_date"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "note_date", name="uq_daily_note_user_date"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True

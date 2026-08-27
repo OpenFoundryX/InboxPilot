@@ -27,9 +27,7 @@ from models.billing import (
     STATUS_ACTIVE,
     STATUS_CANCELLED,
     STATUS_PENDING,
-    # BILLING DISABLED: used only by the commented-out body of
-    # `_subscription_started`; kept imported so restoring it is one edit.
-    SUBSCRIPTION_STARTED_STATUSES,  # noqa: F401
+    SUBSCRIPTION_STARTED_STATUSES,
     Subscription,
 )
 from models.users import User
@@ -146,21 +144,11 @@ def _subscription_started(sub: Subscription | None) -> bool:
     row at the store's `created` default forever. Otherwise this is a direct
     read of `SUBSCRIPTION_STARTED_STATUSES` — no row and no status in that set
     (i.e. `created`/`expired`) both mean no mandate was ever signed.
-
-    BILLING DISABLED (temporary, for testing): true for everyone. This field is
-    not an entitlement check, which is why short-circuiting `resolve_access`
-    did not reach it — but the web app's `dashboard/layout.tsx` reads it as its
-    own paywall gate and redirects to /onboarding/plan when it is false, so an
-    account with no Razorpay mandate (every account, while payments are off)
-    was still shown the plan picker. Restoring payments means deleting the
-    early return and uncommenting the body underneath it.
     """
-    return True
+    if sub is None:
+        return False
 
-    # if sub is None:
-    #     return False
-
-    # return sub.comped or sub.status in SUBSCRIPTION_STARTED_STATUSES
+    return sub.comped or sub.status in SUBSCRIPTION_STARTED_STATUSES
 
 
 async def _subscription_out(
@@ -388,9 +376,7 @@ async def start_checkout(payload: CheckoutIn, user: CurrentUser, db: Db) -> Chec
 
     plan = get_plan(payload.plan_id)
     amount = (
-        plan.annual_price_cents
-        if payload.interval == INTERVAL_ANNUAL
-        else plan.monthly_price_cents
+        plan.annual_price_cents if payload.interval == INTERVAL_ANNUAL else plan.monthly_price_cents
     )
     return CheckoutOut(
         subscription_id=created["id"],
@@ -408,7 +394,6 @@ async def cancel(user: CurrentUser, db: Db) -> SubscriptionOut:
     sub = await get_subscription(db, user.id)
     if not sub or not sub.razorpay_subscription_id:
         raise HTTPException(status.HTTP_409_CONFLICT, "No active subscription to cancel.")
-
 
     at_cycle_end = sub.status in {STATUS_ACTIVE, STATUS_PENDING}
     razorpay_client.cancel_subscription(

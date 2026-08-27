@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     GOOGLE_REDIRECT_URI: str = "http://localhost:3000/api/auth/google/callback"
     POST_LOGIN_REDIRECT_URL: str = "http://localhost:3000/onboarding/connect"
+    # Where to send a browser we are turning away (an uninvited signup). Set
+    # explicitly rather than derived from POST_LOGIN_REDIRECT_URL by string
+    # surgery, which would break the moment that value's path changes.
+    LOGIN_URL: str = "http://localhost:3000/login"
 
     # Comma-separated Fernet keys for the OAuth tokens in `google_connections`.
     # The first encrypts, all of them decrypt — see `core.crypto` for why the
@@ -92,7 +96,7 @@ class Settings(BaseSettings):
                 return value
         for prefix in ("postgresql://", "postgres://"):
             if value.startswith(prefix):
-                return "postgresql+asyncpg://" + value[len(prefix):]
+                return "postgresql+asyncpg://" + value[len(prefix) :]
         return value
 
     CELERY_BROKER_URL: str = "amqp://inboxos:inboxos@rabbitmq:5672//"
@@ -120,7 +124,6 @@ class Settings(BaseSettings):
     # here, so it must match the redirect URI registered in the Cloud console.
     PUBLIC_BASE_URL: str = "http://localhost:8000"
     MAILMAN_DEFAULT_TZ: str = "Asia/Kolkata"
-
 
     MEETING_BOT_PROVIDER: str = "recall"
     RECALL_API_BASE: str = "https://us-east-1.recall.ai"
@@ -163,7 +166,6 @@ class Settings(BaseSettings):
     # calls; an uploaded file or a browser recording has to be transcribed here.
     TRANSCRIBE_MODEL: str = "gpt-4o-transcribe"
 
-
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
@@ -171,7 +173,7 @@ class Settings(BaseSettings):
     RAZORPAY_PLAN_STARTER_ANNUAL: str = ""
     RAZORPAY_PLAN_PRO_MONTHLY: str = ""
     RAZORPAY_PLAN_PRO_ANNUAL: str = ""
-    TRIAL_DAYS: int = 7
+    TRIAL_DAYS: int = 14
 
     @property
     def allowed_classifier_models(self) -> set[str]:

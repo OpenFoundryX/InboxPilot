@@ -40,9 +40,7 @@ class Excerpt:
 class Retriever(Protocol):
     kind: str
 
-    async def retrieve(
-        self, user_id: str, question: str, history: list[dict]
-    ) -> list[Excerpt]: ...
+    async def retrieve(self, user_id: str, question: str, history: list[dict]) -> list[Excerpt]: ...
 
 
 def history_preamble(history: list[dict]) -> str:

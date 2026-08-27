@@ -124,7 +124,9 @@ async def _meetings_extra(db, user_id) -> str:
 
 async def _run_routine(db, routine: Routine, user_id: str, email: str, tz: str) -> None:
     if routine.type == ROUTINE_BRIEFING:
-        subject, body = compose_briefing(user_id, tz, extra=await _meetings_extra(db, routine.user_id))
+        subject, body = compose_briefing(
+            user_id, tz, extra=await _meetings_extra(db, routine.user_id)
+        )
         send_to_inbox(user_id, email, subject, body)
         return
     if routine.type == ROUTINE_CHASE_THREADS:

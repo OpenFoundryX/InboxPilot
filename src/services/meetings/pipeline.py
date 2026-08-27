@@ -119,10 +119,7 @@ def _create_reminders(db, meeting: Meeting) -> int:
                 user_id=meeting.user_id,
                 remind_at=remind_at,
                 title=str(item["what"])[:300],
-                note=(
-                    f"From meeting: {meeting.title or 'untitled'}{owner}\n"
-                    f"Due {due.isoformat()}"
-                ),
+                note=(f"From meeting: {meeting.title or 'untitled'}{owner}\nDue {due.isoformat()}"),
                 origin=ORIGIN_MEETING,
             )
         )

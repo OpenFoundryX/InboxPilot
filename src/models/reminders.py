@@ -21,7 +21,9 @@ ORIGIN_MEETING = "meeting"  # a commitment the notetaker heard in a meeting
 class Reminder(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "reminders"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -30,4 +32,6 @@ class Reminder(UUIDMixin, TimestampMixin, Base):
     thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     origin: Mapped[str] = mapped_column(String(16), default=ORIGIN_MANUAL, nullable=False)
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )

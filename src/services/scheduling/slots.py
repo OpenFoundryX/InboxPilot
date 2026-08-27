@@ -10,9 +10,7 @@ reply rather than serving a booking page.
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-DEFAULT_WEEKLY_HOURS = [
-    {"weekday": day, "start": "09:00", "end": "18:00"} for day in range(5)
-]
+DEFAULT_WEEKLY_HOURS = [{"weekday": day, "start": "09:00", "end": "18:00"} for day in range(5)]
 
 #: An interval the host is not free in, as (start, end), both tz-aware.
 Interval = tuple[datetime, datetime]
@@ -112,9 +110,7 @@ def available_slots(
     pad_before = timedelta(minutes=buffer_before_minutes)
     pad_after = timedelta(minutes=buffer_after_minutes)
 
-    occupied = [
-        (start.astimezone(tz), end.astimezone(tz)) for start, end in [*busy, *reserved]
-    ]
+    occupied = [(start.astimezone(tz), end.astimezone(tz)) for start, end in [*busy, *reserved]]
 
     found: set[datetime] = set()
     for window in windows:

@@ -272,9 +272,7 @@ async def reschedule(
     if not booking.calendar_event_id:
         # See `cancel` — the guest is told the meeting moved while everyone's
         # calendar still shows the old time, so this must not pass in silence.
-        log.warning(
-            "scheduling.reschedule_without_calendar_event", booking_id=str(booking.id)
-        )
+        log.warning("scheduling.reschedule_without_calendar_event", booking_id=str(booking.id))
     else:
         try:
             # Every field, not just the changed ones — `update_event` replaces

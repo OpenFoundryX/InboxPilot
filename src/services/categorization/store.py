@@ -70,13 +70,9 @@ async def get_or_create_categories(db: AsyncSession, user_id: uuid.UUID) -> list
     return await _select_categories(db, user_id)
 
 
-async def get_category(
-    db: AsyncSession, user_id: uuid.UUID, key: str
-) -> EmailCategory | None:
+async def get_category(db: AsyncSession, user_id: uuid.UUID, key: str) -> EmailCategory | None:
     return await db.scalar(
-        select(EmailCategory).where(
-            EmailCategory.user_id == user_id, EmailCategory.key == key
-        )
+        select(EmailCategory).where(EmailCategory.user_id == user_id, EmailCategory.key == key)
     )
 
 
@@ -103,16 +99,12 @@ async def get_rule(
 async def next_rule_priority(db: AsyncSession, user_id: uuid.UUID) -> int:
     """One past the current maximum, so new rules land at the end."""
     highest = await db.scalar(
-        select(func.max(CategorizationRule.priority)).where(
-            CategorizationRule.user_id == user_id
-        )
+        select(func.max(CategorizationRule.priority)).where(CategorizationRule.user_id == user_id)
     )
     return 0 if highest is None else highest + 1
 
 
-async def get_or_create_settings(
-    db: AsyncSession, user_id: uuid.UUID
-) -> CategorizationSettings:
+async def get_or_create_settings(db: AsyncSession, user_id: uuid.UUID) -> CategorizationSettings:
     row = await db.scalar(
         select(CategorizationSettings).where(CategorizationSettings.user_id == user_id)
     )
@@ -128,9 +120,7 @@ def slugify(display_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", display_name.strip().casefold()).strip("_")
 
 
-async def delete_category(
-    db: AsyncSession, user_id: uuid.UUID, category: EmailCategory
-) -> None:
+async def delete_category(db: AsyncSession, user_id: uuid.UUID, category: EmailCategory) -> None:
     """Remove a custom category and everything that pointed at it.
 
     The Gmail label is deliberately left in place: nothing is stripped from the

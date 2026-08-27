@@ -38,6 +38,7 @@ locals {
     "RECALL_WEBHOOK_SECRET",
     "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET",
     "RAZORPAY_PLAN_STARTER_MONTHLY",
     "RAZORPAY_PLAN_STARTER_ANNUAL",
     "RAZORPAY_PLAN_PRO_MONTHLY",
@@ -59,13 +60,6 @@ locals {
   #   GOOGLE_PUBSUB_AUDIENCE   Optional extra claim check on the push token.
   #
   #   ANTHROPIC_API_KEY        Unused while CLASSIFIER_MODELS is gpt-*.
-  #
-  #   RAZORPAY_WEBHOOK_SECRET  Currently unused by the app regardless: the
-  #                            signature check at api/v1/webhooks.py:174 is
-  #                            commented out, so the Razorpay webhook is
-  #                            unverified whether or not this is set. Setting
-  #                            this parameter does NOT fix that — uncommenting
-  #                            that check does.
 }
 
 data "aws_ssm_parameter" "operator" {

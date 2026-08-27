@@ -59,9 +59,7 @@ async def upsert_from_event(
     platform = link[1] if link else None
 
     row = await db.scalar(
-        select(Meeting).where(
-            Meeting.user_id == user_id, Meeting.calendar_event_id == event_id
-        )
+        select(Meeting).where(Meeting.user_id == user_id, Meeting.calendar_event_id == event_id)
     )
     created = False
     if row is None:

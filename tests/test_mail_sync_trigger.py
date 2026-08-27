@@ -51,7 +51,14 @@ def _user(*, onboarded: bool, synced: bool = False) -> User:
 
 
 def _trialing() -> Subscription:
-    return Subscription(status=STATUS_AUTHENTICATED, trial_ends_at=NOW + timedelta(days=7))
+    # `maybe_start_mail_sync` (via `resolve_access`) checks this against the
+    # real wall clock, not the fixture's fixed `NOW` used elsewhere in this
+    # file — so the deadline has to be anchored to actual now, or this
+    # subscription silently becomes "expired" once real time catches up to
+    # whatever `NOW` was when the fixture was written.
+    return Subscription(
+        status=STATUS_AUTHENTICATED, trial_ends_at=datetime.now(timezone.utc) + timedelta(days=7)
+    )
 
 
 async def test_starts_when_onboarding_completes_last(enqueued):
@@ -63,13 +70,8 @@ async def test_starts_when_onboarding_completes_last(enqueued):
     assert enqueued == [(str(user.id),)]
 
 
-@pytest.mark.skip(reason="billing gate disabled for testing")
 async def test_does_not_start_before_checkout(enqueued):
-    """Onboarding done, no card yet — the reported bug, at the trigger.
-
-    Skipped while billing is disabled: with no paywall, finishing onboarding is
-    the whole rule and this sync is expected to start.
-    """
+    """Onboarding done, no card yet — the reported bug, at the trigger."""
     user = _user(onboarded=True)
 
     started = await maybe_start_mail_sync(_FakeSession(Subscription(status=STATUS_CREATED)), user)

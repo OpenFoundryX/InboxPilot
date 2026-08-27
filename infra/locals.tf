@@ -27,6 +27,7 @@ locals {
   # the last step with redirect_uri_mismatch.
   google_redirect_uri     = var.google_redirect_uri != "" ? var.google_redirect_uri : "${var.frontend_origin}/api/auth/google/callback"
   post_login_redirect_url = var.post_login_redirect_url != "" ? var.post_login_redirect_url : "${var.frontend_origin}/onboarding/connect"
+  login_url               = "${var.frontend_origin}/login"
 
   redis_host = aws_elasticache_cluster.main.cache_nodes[0].address
 

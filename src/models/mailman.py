@@ -24,7 +24,9 @@ MODE_CUSTOM_DAILY = "custom_daily"
 class MailmanSettings(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "mailman_settings"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
 
@@ -42,14 +44,18 @@ class MailmanSettings(UUIDMixin, TimestampMixin, Base):
     dnd_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
     dnd_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
-    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     gmail_filter_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class VipRule(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "mailman_vip_rules"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
     domains: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     addresses: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     keywords: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

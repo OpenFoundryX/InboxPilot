@@ -155,9 +155,7 @@ async def upload_file(
 
 
 @router.get("/files/{file_id}/preview", response_model=DraftFilePreview)
-async def preview_file(
-    file_id: uuid.UUID, user: CurrentUser, db: DbSession
-) -> DraftFilePreview:
+async def preview_file(file_id: uuid.UUID, user: CurrentUser, db: DbSession) -> DraftFilePreview:
     """The head of a file's extracted text, so a bad parse is visible."""
     row = await store.get_file(db, user.id, file_id)
     if row is None:

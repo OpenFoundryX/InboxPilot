@@ -76,7 +76,11 @@ async def draft_meeting_replies(db, user_id: str, tz: str) -> int:
             continue
 
         requester = extract_address(e.sender) or ""
-        body = "Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n" + calendar.format_slots(slots) + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
+        body = (
+            "Hi,\n\nHappy to find a time. Here are a few slots that work on my end:\n\n"
+            + calendar.format_slots(slots)
+            + "\n\nLet me know what suits you and I'll send an invite.\n\nBest"
+        )
         subject = f"Re: {e.subject or 'Meeting'}"
         try:
             gmail.create_draft(user_id, requester, subject, body, thread_id=e.thread_id)

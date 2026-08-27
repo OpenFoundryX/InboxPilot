@@ -33,7 +33,10 @@ def summarize_invoices(user_id: str, days: int = 30, limit: int = 12) -> tuple[s
                 model=settings.OPENAI_MODEL,
                 temperature=0,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": _SYS}, {"role": "user", "content": content}],
+                messages=[
+                    {"role": "system", "content": _SYS},
+                    {"role": "user", "content": content},
+                ],
             )
             data = json.loads(resp.choices[0].message.content or "{}")
         except Exception:

@@ -136,8 +136,7 @@ def create_hold_filter(
         existing = find_hold_filter(user_id, hold_label_id, criteria)
         if existing is None:
             raise RuntimeError(
-                f"Gmail reported the filter already exists, but no live filter "
-                f"matches it: {error}"
+                f"Gmail reported the filter already exists, but no live filter matches it: {error}"
             ) from error
         log.info("mailman.hold_filter_adopted", user_id=user_id, filter_id=existing)
         return existing
@@ -166,9 +165,9 @@ def find_hold_filter(user_id: str, hold_label_id: str, criteria: dict) -> str | 
         if "INBOX" not in (act.get("removeLabelIds") or []):
             continue
         live = row.get("criteria") or {}
-        if live.get("query") == criteria.get("query") and live.get(
+        if live.get("query") == criteria.get("query") and live.get("negatedQuery") == criteria.get(
             "negatedQuery"
-        ) == criteria.get("negatedQuery"):
+        ):
             return row.get("id")
     return None
 

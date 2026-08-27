@@ -16,7 +16,7 @@ from models.mailman import (
 
 
 def _hm(value: str) -> int:
-    """"HH:MM" -> minutes since midnight."""
+    """ "HH:MM" -> minutes since midnight."""
     h, m = value.split(":")
     return int(h) * 60 + int(m)
 

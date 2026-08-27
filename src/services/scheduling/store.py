@@ -66,9 +66,7 @@ async def get_or_create_settings(db: AsyncSession, user: User) -> SchedulingSett
     *different* user is a different constraint and still raises, which is why
     each attempt runs in a savepoint and the loop moves to the next candidate.
     """
-    row = await db.scalar(
-        select(SchedulingSettings).where(SchedulingSettings.user_id == user.id)
-    )
+    row = await db.scalar(select(SchedulingSettings).where(SchedulingSettings.user_id == user.id))
     if row is not None:
         return row
 
@@ -116,9 +114,7 @@ async def ensure_default_event_types(db: AsyncSession, user_id: uuid.UUID) -> No
         )
 
 
-async def allocate_event_type_slug(
-    db: AsyncSession, user_id: uuid.UUID, desired: str
-) -> str:
+async def allocate_event_type_slug(db: AsyncSession, user_id: uuid.UUID, desired: str) -> str:
     """A slug free for this user, suffixing the desired one if it is taken."""
     base = slugify(desired, fallback="meeting")
     taken = set(
@@ -133,9 +129,7 @@ async def allocate_event_type_slug(
     return f"{base}-{secrets.token_hex(3)}"
 
 
-async def profile_by_slug(
-    db: AsyncSession, slug: str
-) -> tuple[SchedulingSettings, User] | None:
+async def profile_by_slug(db: AsyncSession, slug: str) -> tuple[SchedulingSettings, User] | None:
     """A public profile and its owner, or None when the link is off or unknown."""
     result = await db.execute(
         select(SchedulingSettings, User)
@@ -146,18 +140,14 @@ async def profile_by_slug(
     return (pair[0], pair[1]) if pair is not None else None
 
 
-async def settings_for_user(
-    db: AsyncSession, user_id: uuid.UUID
-) -> SchedulingSettings | None:
+async def settings_for_user(db: AsyncSession, user_id: uuid.UUID) -> SchedulingSettings | None:
     """A profile by owner, without creating one.
 
     The management endpoints need the host's zone to render a guest's booking,
     and a booking cannot exist without a profile — so unlike the dashboard's
     read, absence here is a genuine "not found" rather than "not set up yet".
     """
-    return await db.scalar(
-        select(SchedulingSettings).where(SchedulingSettings.user_id == user_id)
-    )
+    return await db.scalar(select(SchedulingSettings).where(SchedulingSettings.user_id == user_id))
 
 
 async def event_types_for(

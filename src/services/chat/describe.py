@@ -78,9 +78,7 @@ def _routine_detail(action: dict) -> str:
 
     if delivery_mode == "times_per_day" and times_per_day is not None:
         phrase = (
-            f"Delivers {times_per_day} times a day"
-            if times_per_day != 1
-            else "Delivers once a day"
+            f"Delivers {times_per_day} times a day" if times_per_day != 1 else "Delivers once a day"
         )
         phrases.append(phrase)
     elif delivery_mode == "custom_daily" and custom_times:

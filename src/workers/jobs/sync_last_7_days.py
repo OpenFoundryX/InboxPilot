@@ -60,7 +60,9 @@ def sync_last_7_days(user_id: str, days: int = 30, max_results: int | None = Non
     watching = install_watch(user_id)
     _stamp_initial_sync(user_id)
 
-    log.info("gmail.sync_last_7_days", user_id=user_id, days=days, count=len(emails), classified=queued)
+    log.info(
+        "gmail.sync_last_7_days", user_id=user_id, days=days, count=len(emails), classified=queued
+    )
 
     return {
         "user_id": user_id,

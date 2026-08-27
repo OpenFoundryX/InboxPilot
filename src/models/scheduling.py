@@ -72,9 +72,7 @@ class SchedulingEventType(UUIDMixin, TimestampMixin, Base):
     """One bookable meeting shape: how long, how much notice, what to ask."""
 
     __tablename__ = "scheduling_event_types"
-    __table_args__ = (
-        UniqueConstraint("user_id", "slug", name="uq_event_type_slug_per_user"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "slug", name="uq_event_type_slug_per_user"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
@@ -102,9 +100,7 @@ class SchedulingDateOverride(UUIDMixin, TimestampMixin, Base):
     """A specific date's hours, replacing the weekly pattern. Empty = day off."""
 
     __tablename__ = "scheduling_date_overrides"
-    __table_args__ = (
-        UniqueConstraint("user_id", "day", name="uq_date_override_per_user"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_date_override_per_user"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
@@ -163,9 +159,7 @@ class SchedulingBooking(UUIDMixin, TimestampMixin, Base):
     #: A reschedule moves this row rather than creating a second one, so the
     #: guest's management link and the calendar event both survive the move.
     #: This is what the host's list shows to explain a changed time.
-    rescheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    rescheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reminder_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

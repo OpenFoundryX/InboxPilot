@@ -74,7 +74,9 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
         UniqueConstraint("user_id", "calendar_event_id", name="uq_meeting_user_event"),
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     source: Mapped[str] = mapped_column(String(16), default=SOURCE_CALENDAR, nullable=False)
     calendar_event_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
@@ -83,11 +85,15 @@ class Meeting(UUIDMixin, TimestampMixin, Base):
     # media to transcribe. Non-null for everything a bot attends.
     meeting_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     platform: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    starts_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attendees: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), default=STATUS_PENDING, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default=STATUS_PENDING, nullable=False, index=True
+    )
     # Provider's reason for the current status (a denied recording, a fatal
     # error's sub_code). The only thing that explains a `failed` meeting.
     status_detail: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -188,7 +194,9 @@ class MeetingSettings(UUIDMixin, TimestampMixin, Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     auto_join: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    bot_name: Mapped[str] = mapped_column(String(64), default="InboxPilot Notetaker", nullable=False)
+    bot_name: Mapped[str] = mapped_column(
+        String(64), default="InboxPilot Notetaker", nullable=False
+    )
 
     # Skip 1:1s with yourself and solo holds; 2 means "at least one other person".
     min_attendees: Mapped[int] = mapped_column(Integer, default=2, nullable=False)

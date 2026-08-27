@@ -52,11 +52,31 @@ FETCH_PAGE = 100
 FETCH_ALL_CAP = 300
 
 INTERNAL_LABELS: dict[str, dict[str, str]] = {
-    "inboxos-chat": {"background_color": "#2da2bb", "text_color": "#ffffff", "label_list_visibility": "labelShowIfUnread"},  # teal
-    "inboxos-routines": {"background_color": "#ffad47", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # orange
-    "inboxos-later": {"background_color": "#f691b3", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # pink
-    "inboxos-rules": {"background_color": "#efa093", "text_color": "#000000", "label_list_visibility": "labelShowIfUnread"},  # salmon
-    DRAFTED_LABEL: {"background_color": "#b9e4d0", "text_color": "#076239", "label_list_visibility": "labelShowIfUnread"},  # green
+    "inboxos-chat": {
+        "background_color": "#2da2bb",
+        "text_color": "#ffffff",
+        "label_list_visibility": "labelShowIfUnread",
+    },  # teal
+    "inboxos-routines": {
+        "background_color": "#ffad47",
+        "text_color": "#000000",
+        "label_list_visibility": "labelShowIfUnread",
+    },  # orange
+    "inboxos-later": {
+        "background_color": "#f691b3",
+        "text_color": "#000000",
+        "label_list_visibility": "labelShowIfUnread",
+    },  # pink
+    "inboxos-rules": {
+        "background_color": "#efa093",
+        "text_color": "#000000",
+        "label_list_visibility": "labelShowIfUnread",
+    },  # salmon
+    DRAFTED_LABEL: {
+        "background_color": "#b9e4d0",
+        "text_color": "#076239",
+        "label_list_visibility": "labelShowIfUnread",
+    },  # green
 }
 
 INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
@@ -70,16 +90,27 @@ INBOXPILOT_LABELS: dict[str, dict[str, str]] = {
     **INTERNAL_LABELS,
 }
 
-GMAIL_SYSTEM_LABEL_NAMES: frozenset[str] = frozenset({
-    "inbox", "spam", "trash", "unread", "starred", "important",
-    "sent", "draft", "chat",
-    "category_personal", "category_social", "category_promotions",
-    "category_updates", "category_forums",
-})
+GMAIL_SYSTEM_LABEL_NAMES: frozenset[str] = frozenset(
+    {
+        "inbox",
+        "spam",
+        "trash",
+        "unread",
+        "starred",
+        "important",
+        "sent",
+        "draft",
+        "chat",
+        "category_personal",
+        "category_social",
+        "category_promotions",
+        "category_updates",
+        "category_forums",
+    }
+)
 
 RESERVED_LABEL_NAMES: frozenset[str] = (
-    frozenset(name.casefold() for name in INBOXPILOT_LABELS)
-    | GMAIL_SYSTEM_LABEL_NAMES
+    frozenset(name.casefold() for name in INBOXPILOT_LABELS) | GMAIL_SYSTEM_LABEL_NAMES
 )
 
 
@@ -118,9 +149,7 @@ def initiate_connection(user_id: str, callback_url: str | None = None) -> str:
     Connecting now needs a per-request CSRF token stored server-side, which is
     the route's job — there is nothing sensible to return from here.
     """
-    raise NotImplementedError(
-        "start the Google grant via GET /v1/integrations/google/connect"
-    )
+    raise NotImplementedError("start the Google grant via GET /v1/integrations/google/connect")
 
 
 def get_profile(user_id: str) -> dict:
@@ -336,9 +365,7 @@ def send_email(
     aliases — Gmail rejects anything else, unlike the Composio action which
     accepted the field unconditionally.
     """
-    raw = build_message(
-        to=to, subject=subject, body=body, from_email=from_email, is_html=is_html
-    )
+    raw = build_message(to=to, subject=subject, body=body, from_email=from_email, is_html=is_html)
     # Never retried: a send that times out has usually already been delivered,
     # and a duplicate email cannot be taken back.
     sent = _post(user_id, "/messages/send", json={"raw": raw}, idempotent=False)
@@ -402,7 +429,9 @@ def _threading_headers(
     `reply_in_thread` has no subject parameter at all.
     """
     try:
-        thread = get_thread(user_id, thread_id, metadata_headers=["Message-ID", "References", "Subject"])
+        thread = get_thread(
+            user_id, thread_id, metadata_headers=["Message-ID", "References", "Subject"]
+        )
     except GoogleAPIError:
         log.warning("gmail.thread_headers_unavailable", user_id=user_id, thread_id=thread_id)
         return None, None, reply_subject(subject)
@@ -429,9 +458,7 @@ def get_message(user_id: str, message_id: str, *, fmt: str = "full") -> dict:
     return _get(user_id, f"/messages/{message_id}", params={"format": fmt})
 
 
-def get_thread(
-    user_id: str, thread_id: str, *, metadata_headers: list[str] | None = None
-) -> dict:
+def get_thread(user_id: str, thread_id: str, *, metadata_headers: list[str] | None = None) -> dict:
     """A thread and its messages.
 
     Passing `metadata_headers` switches to the metadata format, which skips the

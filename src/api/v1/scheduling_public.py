@@ -132,9 +132,7 @@ async def _profile(db: DbSession, profile_slug: str) -> tuple[SchedulingSettings
 async def _event(
     db: DbSession, profile: SchedulingSettings, event_slug: str
 ) -> SchedulingEventType:
-    row = await store.event_type_by_slug(
-        db, profile.user_id, event_slug, enabled_only=True
-    )
+    row = await store.event_type_by_slug(db, profile.user_id, event_slug, enabled_only=True)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Meeting type not found")
     return row
@@ -241,10 +239,7 @@ async def public_availability(
     return AvailabilityRange(
         timezone=profile.timezone,
         duration_minutes=event.duration_minutes,
-        days=[
-            AvailabilityDay(date=day, slots=days.get(day, []))
-            for day in sorted(days)
-        ],
+        days=[AvailabilityDay(date=day, slots=days.get(day, [])) for day in sorted(days)],
     )
 
 
@@ -276,8 +271,7 @@ async def book(
         limit=BOOKING_LIMIT_PER_HOST,
         window=BOOKING_WINDOW,
         message=(
-            "This host has taken a lot of bookings in the last hour. "
-            "Please try again shortly."
+            "This host has taken a lot of bookings in the last hour. Please try again shortly."
         ),
     )
 
@@ -326,9 +320,7 @@ async def view_booking(token: str, request: Request, db: DbSession) -> ManagedBo
     if profile is None or user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Booking not found")
 
-    event = (
-        await db.get(SchedulingEventType, row.event_type_id) if row.event_type_id else None
-    )
+    event = await db.get(SchedulingEventType, row.event_type_id) if row.event_type_id else None
     return ManagedBooking(
         booking=BookingRead.model_validate(row),
         host_name=_host_name(user),
@@ -358,9 +350,7 @@ async def cancel_own_booking(
     if profile is None or user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Booking not found")
 
-    result = await booking_service.cancel(
-        db, row, profile, user, by="guest", reason=payload.reason
-    )
+    result = await booking_service.cancel(db, row, profile, user, by="guest", reason=payload.reason)
     return BookingRead.model_validate(result)
 
 
@@ -376,9 +366,7 @@ async def reschedule_own_booking(
 
     profile = await store.settings_for_user(db, row.user_id)
     user = await db.get(User, row.user_id)
-    event = (
-        await db.get(SchedulingEventType, row.event_type_id) if row.event_type_id else None
-    )
+    event = await db.get(SchedulingEventType, row.event_type_id) if row.event_type_id else None
     if profile is None or user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Booking not found")
     if event is None:

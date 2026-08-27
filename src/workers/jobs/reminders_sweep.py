@@ -32,9 +32,7 @@ async def _sweep(db) -> dict:
     now = datetime.now(timezone.utc)
     due = list(
         await db.scalars(
-            select(Reminder).where(
-                Reminder.delivered_at.is_(None), Reminder.remind_at <= now
-            )
+            select(Reminder).where(Reminder.delivered_at.is_(None), Reminder.remind_at <= now)
         )
     )
     delivered = 0

@@ -138,12 +138,18 @@ def _to_speech_audio(source: Path, dest: Path) -> Path:
     """Strip to mono speech-grade audio, discarding video entirely."""
     _run(
         [
-            "ffmpeg", "-nostdin", "-y",
-            "-i", str(source),
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(source),
             "-vn",  # drop video: it is the bulk of the file and none of the words
-            "-ac", "1",
-            "-ar", str(_SAMPLE_RATE),
-            "-b:a", _BITRATE,
+            "-ac",
+            "1",
+            "-ar",
+            str(_SAMPLE_RATE),
+            "-b:a",
+            _BITRATE,
             str(dest),
         ],
         what="Audio extraction",
@@ -156,9 +162,13 @@ def _to_speech_audio(source: Path, dest: Path) -> Path:
 def _duration_seconds(audio: Path) -> float:
     proc = _run(
         [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "json",
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
             str(audio),
         ],
         what="Reading media duration",
@@ -211,11 +221,17 @@ def _split(audio: Path, workdir: Path, duration: float) -> list[Path]:
     out.mkdir(exist_ok=True)
     _run(
         [
-            "ffmpeg", "-nostdin", "-y",
-            "-i", str(audio),
-            "-f", "segment",
-            "-segment_time", str(_CHUNK_SECONDS),
-            "-c", "copy",
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(audio),
+            "-f",
+            "segment",
+            "-segment_time",
+            str(_CHUNK_SECONDS),
+            "-c",
+            "copy",
             str(out / "part-%04d.mp3"),
         ],
         what="Splitting audio",

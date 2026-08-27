@@ -23,9 +23,7 @@ from core.logging import get_logger
 
 log = get_logger(__name__)
 
-GOOGLE_ISSUERS = frozenset(
-    {"https://accounts.google.com", "accounts.google.com"}
-)
+GOOGLE_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
 
 
 class InvalidPushNotification(ValueError):
