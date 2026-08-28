@@ -1,0 +1,41 @@
+name: Self-hosting problem
+description: Report a documentation, installation, upgrade, or operations problem.
+title: "self-host: "
+labels: [self-hosting, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach `.env`, credentials, database dumps, real email, tokens, or signed URLs.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and sanitized output
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker/Compose or Python/uv versions
+    validations:
+      required: true
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed secrets, personal data, and mailbox content.
+          required: true

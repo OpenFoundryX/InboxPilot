@@ -63,6 +63,7 @@ _BOT_STATUS_MAP = {
     BOT_DONE: STATUS_RECORDED,
     BOT_FAILED: STATUS_FAILED,
 }
+
 # Once a recap exists, later callbacks are noise — never walk a meeting back.
 _TERMINAL_STATUSES = (STATUS_PROCESSED, STATUS_DELIVERED)
 

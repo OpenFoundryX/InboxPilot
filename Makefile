@@ -43,8 +43,11 @@ test: ## Run the test suite
 	$(COMPOSE) run --rm test pytest
 
 .PHONY: lint
-lint: ## Lint and type-check
+lint: ## Lint Python
 	uv run ruff check src tests
+
+.PHONY: typecheck
+typecheck: ## Type-check Python (known pre-1.0 errors remain)
 	uv run mypy src
 
 .PHONY: fmt

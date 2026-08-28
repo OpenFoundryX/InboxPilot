@@ -59,7 +59,7 @@ locals {
     { name = "GMAIL_POLL_ENABLED", value = "true" },
     { name = "GMAIL_PUSH_ENABLED", value = "true" },
     { name = "MEETING_BOT_PROVIDER", value = "recall" },
-    { name = "RECALL_API_BASE", value = "https://us-east-1.recall.ai" },
+    { name = "RECALL_API_BASE", value = "https://ap-northeast-1.recall.ai" },
   ]
 
   common_secrets = [

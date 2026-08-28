@@ -219,3 +219,19 @@ __marimo__/
 
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Terraform local state, plans, caches, and operator-specific variables
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local security scanner reports
+gitleaks-report.*
+trufflehog-report.*

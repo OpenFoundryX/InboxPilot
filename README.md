@@ -1,121 +1,213 @@
-# myapp
+# InboxPilot
 
-A FastAPI modular monolith with async SQLAlchemy, Celery, and agentic AI workflows.
+InboxPilot is an open-source, Gmail-native assistant for people who want fewer
+interruptions rather than another inbox to manage. It batches non-urgent mail,
+organizes each thread into one category, prepares replies on a schedule, answers
+questions from mailbox context, and turns email and meetings into a daily plan.
 
-## Layout
+> [!IMPORTANT]
+> InboxPilot can read and modify a connected mailbox. Start with a test Google
+> account, review the requested OAuth scopes, and understand the Mailman hold
+> filter before using it with important mail.
 
+## Why InboxPilot
+
+Most email assistants react after a message has already reached the inbox and
+triggered a notification. InboxPilot's optional Mailman mode installs a native
+Gmail filter that holds non-VIP mail out of the inbox, then releases it during
+delivery windows chosen by the user.
+
+The rest of the product follows the same calm-workflow philosophy:
+
+- **One category per thread:** To do, To follow up, Notification, FYI,
+  Marketing, Noise, or a custom category.
+- **Scheduled drafts:** replies are prepared in batches instead of appearing
+  continuously as mail arrives.
+- **Grounded mailbox search:** natural-language questions become several Gmail
+  searches, with ranked results and surrounding thread context.
+- **Daily briefings:** mail, meetings, reminders, deadlines, and follow-ups are
+  combined into a useful plan.
+- **Meeting capture:** use a Recall.ai bot, upload media, or record in the
+  browser and receive a transcript and recap.
+- **Gmail and Calendar remain the source of truth:** InboxPilot layers workflows
+  on the tools users already have.
+
+## Project status
+
+InboxPilot is under active development and is not yet a stable `v1.0` release.
+Database migrations and configuration may change between pre-1.0 versions.
+Review [the open-source roadmap](docs/open-source-strategy.md) before relying on
+it in a production organization.
+
+The web application currently lives in the companion
+[`OpenFoundryX/inboxos-web`](https://github.com/OpenFoundryX/inboxos-web)
+repository. This repository contains the API, workers, integrations, migrations,
+Docker development stack, and AWS deployment reference used by the hosted
+service.
+
+## Architecture
+
+```text
+Browser / web app
+        |
+        v
+FastAPI API ---- PostgreSQL
+    |     \------ Redis (cache, locks, results)
+    |
+    +---------- RabbitMQ ---------- Celery worker
+                                      |
+                                      +-- Gmail / Calendar
+                                      +-- OpenAI
+                                      +-- Recall.ai (optional)
+                                      +-- S3 / R2 / MinIO (optional media)
+
+Celery beat schedules polling, delivery windows, drafts, reminders,
+meeting processing, retention, and daily routines.
 ```
-src/app/
-  main.py          # FastAPI app factory + lifespan
-  celery_app.py    # Celery instance + config
-  worker.py        # worker entrypoint (imports task modules)
-  beat_schedule.py # Celery beat schedule
-  core/            # config, database, security, logging, exceptions, redis
-  domains/         # users, invoices, billing (models/schemas/router/service/repository/tasks)
-  agents/          # runtime, tools, prompts, workflows, llm clients
-  api/             # deps + aggregated /v1 router
-  models/          # declarative Base + mixins
-```
 
-## Quickstart
+See [Architecture](docs/architecture.md) for the module boundaries and main
+data flows.
+
+## Requirements
+
+- Docker with Compose v2 (recommended), or Python 3.12 and
+  [uv](https://docs.astral.sh/uv/)
+- A Google Cloud OAuth client
+- An OpenAI API key for AI features
+- PostgreSQL 16, Redis 7, and RabbitMQ 3 when running without Docker
+- Optional: Google Pub/Sub for low-latency Gmail events
+- Optional: Recall.ai and S3-compatible storage for meeting features
+
+## Quick start
+
+1. Clone the repository and create local configuration:
+
+   ```bash
+   git clone https://github.com/OpenFoundryX/InboxPilot.git
+   cd InboxPilot
+   cp .env.example .env
+   ```
+
+2. At minimum, replace `JWT_SECRET`, configure PostgreSQL/broker values if the
+   Compose defaults are unsuitable, and set `OPENAI_API_KEY`.
+
+3. Start dependencies and services:
+
+   ```bash
+   make build
+   make up
+   ```
+
+4. In another terminal, apply database migrations:
+
+   ```bash
+   make migrate
+   ```
+
+5. Open the API documentation at <http://localhost:8000/docs>. RabbitMQ's local
+   management interface is at <http://localhost:15672>.
+
+The backend can boot without Google, Recall, or billing credentials, but the
+features backed by those providers will remain unavailable. A usable mailbox
+connection requires the Google setup described in
+[Self-hosting InboxPilot](docs/self-hosting.md).
+
+## Google permissions
+
+InboxPilot separates lightweight sign-in from the later mailbox connection. The
+mailbox connection requests only the scopes used by the product:
+
+| Scope | Why it is needed |
+|---|---|
+| `gmail.modify` | Read mail, apply/remove labels, archive, mark read, star, and create drafts |
+| `gmail.settings.basic` | Install and remove the optional Mailman hold filter |
+| `calendar.events` | Read and manage events used for scheduling and meeting workflows |
+| `calendar.freebusy` | Offer booking times that are actually free |
+
+These Gmail scopes are restricted Google scopes. A self-hosted OAuth app in
+Google's Testing mode is limited to test users and its refresh tokens normally
+expire after seven days. Publishing an OAuth app broadly requires Google's
+verification process and may require a CASA assessment.
+
+## Development
 
 ```bash
-cp .env.example .env
-make build
-make up            # api :8000, worker, beat, postgres, redis, rabbitmq
-make migrate       # apply DB migrations
+make install       # install Python and development dependencies with uv
+make test          # run tests in the Compose test container
+make lint          # Ruff linting
+make typecheck     # mypy (known pre-1.0 errors remain)
+make fmt           # format and autofix
+make logs          # follow all Compose logs
+make shell         # shell inside the API container
 ```
 
-Then open http://localhost:8000/docs — and the RabbitMQ management UI at
-http://localhost:15672 (user/pass from `.env`, default inboxos/inboxos).
-
-## Local (without Docker)
+Run locally without Docker after starting PostgreSQL, Redis, and RabbitMQ:
 
 ```bash
 uv sync --extra dev
-PYTHONPATH=src uv run uvicorn main:app --reload   # needs Postgres, Redis + RabbitMQ running
+PYTHONPATH=src uv run alembic upgrade head
+PYTHONPATH=src uv run uvicorn main:app --reload
 ```
 
-## Meeting notetaker
+The test suite uses the configured PostgreSQL database and wraps each test in a
+transaction that is rolled back. Do not point tests at a production database.
 
-A bot joins the user's Zoom / Google Meet / Teams calls, records and transcribes
-them, and turns each call into a recap: a summary email, a stored transcript,
-reminders for dated action items, and a section in the daily briefing.
+## Repository layout
 
-[Recall.ai](https://recall.ai) supplies the bot and raw transcription; the join
-rules, summarization, and delivery are ours. The vendor sits behind
-`integrations/meetingbot/base.py`, so swapping it is a new module plus
-`MEETING_BOT_PROVIDER`.
-
-Setup:
-
-1. Set `RECALL_API_KEY` and `RECALL_API_BASE` (the region host must match the key).
-2. In the Recall dashboard, point the workspace webhook at
-   `$PUBLIC_BASE_URL/v1/webhooks/meeting-bot` and copy the signing secret into
-   `RECALL_WEBHOOK_SECRET`.
-3. Connect Google (`/v1/integrations/google/connect`) — one grant covers Gmail
-   and Calendar, and it is the same one the rest of the app uses.
-4. `PUT /v1/meetings/settings` with `{"auto_join": true}`. It defaults **off**:
-   recording other people is the user's call to make deliberately.
-
-Meetings are booked by the `meetings.sweep` beat job a few minutes ahead of each
-call, or on demand with `POST /v1/meetings/join` and a pasted link. Cost is
-usage-based, roughly $0.65 per recorded hour at the time of writing.
-
-### Capturing without a bot
-
-Not every meeting is a call a bot can join. Two other ways in, both ending at the
-same recap:
-
-| Path | Endpoints |
-|---|---|
-| Record in the browser | `POST /v1/meetings/live`, then `POST /v1/meetings/{id}/uploads/complete` |
-| Upload a file | `POST /v1/meetings/uploads`, then `POST /v1/meetings/{id}/uploads/complete` |
-
-Both reserve a row, hand back a presigned S3 URL, and wait to be told the object
-landed — which is verified against the bucket, not taken from the client. The
-bytes go browser-to-bucket and never through this API.
-
-`gpt-4o-transcribe` transcribes them (`services/meetings/transcribe.py`), because
-Recall only transcribes calls its own bots attended. That model returns no speaker
-labels, so summarization is told not to guess who committed to what. Duration is
-read from the media with `ffprobe` and meters against the same bot-hour cap.
-
-#### Media storage
-
-`make up` runs MinIO and creates the bucket, so local development needs no cloud
-account. The console is at http://localhost:9003 (credentials from `S3_*` in
-`.env`, default `inboxos` / `inboxos-secret`).
-
-The API port is published on **9002**, not MinIO's usual 9000, which is often
-already taken by another project's MinIO. Override with `MINIO_API_PORT` and
-`MINIO_CONSOLE_PORT` if that clashes too.
-
-Two endpoint settings rather than one, because the browser and the API reach the
-bucket at different addresses:
-
-| Setting | Who uses it | Local value |
-|---|---|---|
-| `S3_ENDPOINT_URL` | API and worker, from inside the compose network | `http://minio:9000` |
-| `S3_PUBLIC_ENDPOINT_URL` | The browser, following a presigned URL | `http://localhost:9002` |
-
-A presigned URL's signature covers the host, so one signed for `minio:9000` is
-rejected with `SignatureDoesNotMatch` the moment a browser opens it. Leave
-`S3_PUBLIC_ENDPOINT_URL` blank for AWS and R2, where both sides use the same
-public host.
-
-For a real bucket: set `S3_*` to it, blank `S3_ENDPOINT_URL` for AWS or the
-account endpoint for R2, and add a CORS rule allowing `PUT` and `GET` from the web
-origin. A missing CORS rule fails in the browser with no server-side trace, so
-it's the first thing to check if an upload dies at 0%. `ffmpeg` is already in the
-Docker image.
-
-## Common commands
-
-```bash
-make revision m="add users table"   # autogenerate migration
-make migrate                         # upgrade head
-make test
-make lint
-make fmt
+```text
+src/
+  api/             FastAPI routers and dependencies
+  core/            configuration, database, security, logging, locks
+  integrations/    Google, meeting-bot, and storage provider boundaries
+  models/          SQLAlchemy models
+  schemas/         API request/response schemas
+  services/        domain workflows and business rules
+  workers/         Celery app and jobs
+alembic/            database migrations
+tests/              unit and integration tests
+scripts/            operator diagnostics and invite management
+docs/               architecture, runbooks, plans, and security material
+infra/              AWS deployment used by the hosted environment
 ```
+
+Some database names and Gmail labels still use the historical `inboxos` name.
+They are retained for compatibility with existing installations and mailboxes.
+
+## Optional meeting features
+
+InboxPilot supports three paths into the same transcript and recap pipeline:
+
+- Recall.ai bot for Zoom, Google Meet, or Microsoft Teams
+- Direct browser recording
+- Media upload
+
+Recall keys are region-specific. Set `RECALL_API_BASE` to the region that issued
+the key and configure the workspace webhook as:
+
+```text
+${PUBLIC_BASE_URL}/v1/webhooks/meeting-bot
+```
+
+Browser recordings and uploaded media use S3-compatible storage. The local
+Compose stack provides MinIO on ports `9002` (API) and `9003` (console).
+
+## Security
+
+Read [SECURITY.md](SECURITY.md) before operating InboxPilot on real mailbox
+data. Please report vulnerabilities privately through GitHub's private
+vulnerability reporting; do not open a public issue containing exploit details,
+tokens, email content, or personal data.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow
+the [Code of Conduct](CODE_OF_CONDUCT.md), and use GitHub Discussions or an issue
+for design questions before starting a large change.
+
+## License
+
+InboxPilot is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+If you run a modified version as a network service, AGPL section 13 requires you
+to offer the corresponding source code of that version to its users.
+
+Copyright © 2026 OpenFoundryX and InboxPilot contributors.

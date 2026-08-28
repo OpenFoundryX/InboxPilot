@@ -1,7 +1,7 @@
 [project]
-name = "myapp"
+name = "inboxpilot"
 version = "0.1.0"
-description = "FastAPI modular monolith with Celery and agentic workflows"
+description = "Open-source Gmail-native assistant for calm, scheduled email workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
