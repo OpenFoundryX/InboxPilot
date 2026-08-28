@@ -40,7 +40,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # ARM64 to match runtime_platform on every task definition. A mismatch
       # produces a task that dies immediately with "exec format error".
